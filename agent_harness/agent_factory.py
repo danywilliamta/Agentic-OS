@@ -33,7 +33,7 @@ class AgentFactory:
         Returns:
             Configured Agent instance
         """
-        with open(config_path, 'r') as f:
+        with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
         return self.create_from_dict(config)
@@ -119,11 +119,7 @@ class AgentFactory:
             resolved_config = self._resolve_env_vars(tool_config)
 
             # Get tool from registry and configure
-            configured_tool = tool_registry.configure_tool(
-                tool_type,
-                resolved_config,
-                rename_as=tool_spec["name"]
-            )
+            configured_tool = tool_registry.configure_tool(tool_type, resolved_config, rename_as=tool_spec["name"])
 
             # Set description
             if "description" in tool_spec:
@@ -162,9 +158,7 @@ class AgentFactory:
         cp_type = checkpointer_config.get("type", "postgres")
 
         if cp_type == "postgres":
-            conn_str = self._resolve_env_var(
-                checkpointer_config.get("connection_string", os.getenv("DATABASE_URL"))
-            )
+            conn_str = self._resolve_env_var(checkpointer_config.get("connection_string", os.getenv("DATABASE_URL")))
             return PostgresSaver(conn_str)
 
         elif cp_type == "sqlite":
@@ -186,9 +180,7 @@ class AgentFactory:
         store_type = store_config.get("type", "postgres")
 
         if store_type == "postgres":
-            conn_str = self._resolve_env_var(
-                store_config.get("connection_string", os.getenv("DATABASE_URL"))
-            )
+            conn_str = self._resolve_env_var(store_config.get("connection_string", os.getenv("DATABASE_URL")))
             return PostgresStore(conn_str)
 
         return None
