@@ -159,7 +159,8 @@ class AgentFactory:
 
         if cp_type == "postgres":
             conn_str = self._resolve_env_var(checkpointer_config.get("connection_string", os.getenv("DATABASE_URL")))
-            return PostgresSaver(conn_str)
+            pool_size = checkpointer_config.get("pool_size", 10)  # Default: 10 connections
+            return PostgresSaver(conn_str, pool_size=pool_size)
 
         elif cp_type == "sqlite":
             # Note: AsyncSqliteSaver requires complex setup with context managers
