@@ -1,0 +1,132 @@
+# Inventory Management Agent Configuration
+# Test agent for stock management, devis, and commandes
+
+agent_id: inventory-agent
+name: Gestionnaire d'Inventaire
+description: Agent intelligent pour gérer le stock, les devis et les commandes
+
+# Model configuration
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  temperature: 0.7
+
+# System prompt
+system_prompt: |
+  Tu es un agent intelligent de gestion d'inventaire pour une entreprise de fournitures informatiques.
+
+  **Tes responsabilités:**
+  1. Consulter le stock disponible
+  2. Lire et analyser les devis PDF
+  3. Enregistrer les devis dans la base de données
+  4. Transformer les devis en commandes (si stock suffisant)
+  5. Mettre à jour les quantités en stock après commande
+
+  **Base de données:**
+  - Table `users`: Clients (id, name, email, company)
+  - Table `stock`: Produits disponibles (id, product_name, qty, unit_price)
+  - Table `devis_raw`: Devis bruts uploadés (id, filename, file_path, uploaded_at, user_id, status)
+  - Table `devis`: Devis header (id, devis_raw_id, user_id, devis_number, total_amount, status, created_at)
+  - Table `devis_items`: Lignes de devis (id, devis_id, product_name, qty, unit_price, line_total)
+  - Table `commande`: Commandes header (id, devis_id, user_id, commande_number, total_amount, status, created_at)
+  - Table `commande_items`: Lignes de commande (id, commande_id, product_name, qty, unit_price, line_total)
+
+  **Workflow pour traiter un devis brut (PDF/TXT):**
+  1. Lire le fichier depuis `devis_raw` (utiliser `read_pdf_devis` avec le `file_path`)
+  2. Extraire les informations: client, produits, quantités, prix
+  3. Créer un record dans `devis` avec devis_number et total_amount
+  4. Insérer chaque ligne produit dans `devis_items` avec le devis_id
+  5. Mettre à jour le statut du `devis_raw` à 'processed'
+
+  **Workflow pour transformer un devis en commande:**
+  1. Vérifier que le devis existe et est en statut 'pending'
+  2. Récupérer tous les items: SELECT * FROM devis_items WHERE devis_id = ?
+  3. Vérifier que le stock est suffisant pour chaque produit
+  4. Créer le header de commande dans `commande`
+  5. Copier toutes les lignes dans `commande_items`
+  6. Mettre à jour le stock (soustraire la quantité de chaque produit)
+  7. Mettre à jour le statut du devis à 'completed'
+
+  **Règles importantes:**
+  - Ne jamais créer de commande si le stock est insuffisant
+  - Toujours vérifier l'existence des produits avant toute opération
+  - Être précis et professionnel dans les réponses
+  - Indiquer clairement les prix et quantités
+
+  **Exemples de requêtes:**
+  - "Quel est le stock de Laptop Dell XPS 15?"
+  - "Montre-moi tous les devis bruts en attente"
+  - "Traite le devis brut #1 (lis le PDF et extrais les données)"
+  - "Transforme le devis #1 en commande"
+  - "Y a-t-il assez de stock pour le devis #2?"
+
+# Tools configuration
+tools:
+  # 1. Query database - Read operations
+  - name: query_database
+    type: generic_db_query
+    description: |
+      Query the inventory database (SQLite).
+      Use SQL SELECT statements to read data from tables: users, stock, devis_raw, devis, devis_items, commande, commande_items.
+      Examples:
+      - SELECT * FROM stock WHERE product_name LIKE '%Laptop%'
+      - SELECT * FROM devis_raw WHERE status = 'pending'
+      - SELECT * FROM devis WHERE status = 'pending'
+      - SELECT di.* FROM devis d JOIN devis_items di ON d.id = di.devis_id WHERE d.devis_number = '2024-001'
+      - SELECT s.qty as stock_qty, di.qty as devis_qty FROM stock s JOIN devis_items di ON s.product_name = di.product_name WHERE di.devis_id = 1
+    config:
+      connection_string: sqlite:///test_data/test_inventory.db
+
+  # 2. Write to database - Insert/Update operations
+  - name: write_database
+    type: generic_db_write
+    description: |
+      Write to the inventory database (SQLite).
+      Use this for INSERT, UPDATE operations.
+      Examples:
+      - INSERT INTO devis (devis_raw_id, user_id, devis_number, total_amount, status) VALUES (1, 2, '2024-001', 4449.50, 'pending')
+      - INSERT INTO devis_items (devis_id, product_name, qty, unit_price, line_total) VALUES (1, 'Webcam HD', 15, 79.99, 1199.85)
+      - UPDATE devis_raw SET status = 'processed' WHERE id = 1
+      - UPDATE stock SET qty = qty - 5 WHERE product_name = 'Laptop'
+      - UPDATE devis SET status = 'completed' WHERE id = 1
+      - INSERT INTO commande (devis_id, user_id, commande_number, total_amount, status) VALUES (1, 1, 'CMD-2024-001', 7500.00, 'created')
+      - INSERT INTO commande_items (commande_id, product_name, qty, unit_price, line_total) VALUES (1, 'Laptop', 5, 1500.00, 7500.00)
+    config:
+      connection_string: sqlite:///test_data/test_inventory.db
+
+  # 3. Read PDF devis files
+  - name: read_pdf_devis
+    type: read_pdf
+    description: |
+      Read and extract text from PDF devis files.
+      Use this to analyze devis documents and extract product information.
+      The extracted text will contain product names, quantities, and prices.
+    config:
+      # No specific config needed, will use file path as parameter
+
+# Backend configuration
+backend:
+  type: state
+
+# Checkpointer - Use memory for testing (conversations lost on restart)
+# Note: For production, use postgres with proper connection pooling
+checkpointer:
+  type: memory
+
+# Store configuration - Disabled for testing
+store:
+  enabled: false
+
+# Permissions - Allow database operations but require confirmation for writes
+permissions:
+  # Allow read queries without confirmation
+  - tool: query_database
+    mode: allow
+
+  # Require confirmation for write operations (safety)
+  - tool: write_database
+    mode: interrupt
+
+  # Allow PDF reading
+  - tool: read_pdf_devis
+    mode: allow

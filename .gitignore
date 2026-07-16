@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+
+# Environment
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Database
+*.db
+*.sqlite
+
+# Docker
+.dockerignore
+
+# Examples are tracked but their data/db files are not
+examples/**/test_inventory.db
+examples/**/checkpoints.db
+examples/**/test.db
+examples/**/*.db
+examples/**/__pycache__/
+
+# Distribution
+dist/
+build/
+*.egg-info/
+
+# Kubernetes secrets
+k8s/secrets.yaml
+k8s/*.secret.yaml

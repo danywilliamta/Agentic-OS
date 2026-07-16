@@ -1,0 +1,52 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: hourly-devis-processing
+  namespace: agent-harness
+spec:
+  # Schedule: Every hour at minute 0
+  schedule: "0 * * * *"
+
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 1
+
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300  # 5 minutes timeout
+      backoffLimit: 1
+
+      template:
+        spec:
+          restartPolicy: OnFailure
+
+          containers:
+          - name: agent-task
+            image: your-registry/agent-harness:latest
+
+            command:
+            - python
+            - run_scheduled_task.py
+            - inventory-agent
+            - system
+            - "Traite tous les devis bruts en attente de traitement"
+
+            env:
+            - name: ANTHROPIC_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: agent-secrets
+                  key: anthropic-api-key
+
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: agent-secrets
+                  key: database-url
+
+            resources:
+              requests:
+                memory: "256Mi"
+                cpu: "100m"
+              limits:
+                memory: "512Mi"
+                cpu: "500m"

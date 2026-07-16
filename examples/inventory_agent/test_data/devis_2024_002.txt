@@ -1,0 +1,29 @@
+
+DEVIS N° 2024-002
+==================
+
+Date: 15/07/2024
+Client: Jean Dupont
+Société: TechCorp
+Email: jean.dupont@example.com
+
+DÉTAILS DE LA COMMANDE
+-----------------------
+
+Produit: Laptop Dell XPS 15
+Quantité: 3
+Prix unitaire: 1500.00 €
+Total: 4,500.00 €
+
+Produit: Écran 27 pouces 4K
+Quantité: 6
+Prix unitaire: 450.00 €
+Total: 2,700.00 €
+
+TOTAL GÉNÉRAL: 7,200.00 €
+
+Validité du devis: 30 jours
+Délai de livraison: 5-7 jours ouvrés
+
+---
+Pour valider ce devis, merci de nous retourner ce document signé.

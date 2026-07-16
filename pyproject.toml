@@ -1,0 +1,70 @@
+[project]
+name = "agent-harness"
+version = "0.1.0"
+description = "Production-ready OS for LLM agents - Multi-agent orchestration, tool registry, and delegation"
+readme = "README.md"
+authors = [
+    {name = "Dany-William TAGNE", email = "dany-william.tagne@mfglabs.com"}
+]
+requires-python = ">=3.11,<4.0"
+license = {text = "MIT"}
+keywords = ["ai", "agents", "llm", "langgraph", "orchestration", "multi-agent"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+[tool.poetry]
+package-mode = true
+packages = [
+    { include = "agent_harness" }
+]
+
+[tool.poetry.dependencies]
+python = ">=3.11,<4.0"
+# Core dependencies
+deepagents = ">=0.6.12,<0.7.0"
+langchain-anthropic = ">=1.4.8,<2.0.0"
+python-dotenv = ">=1.2.2,<2.0.0"
+PyYAML = ">=6.0,<7.0"
+sqlalchemy = "^2.0.51"
+
+# Optional: PDF support
+PyPDF2 = {version = ">=3.0.0,<4.0.0", optional = true}
+
+# Optional: API server
+fastapi = {version = ">=0.115.0,<1.0.0", optional = true}
+uvicorn = {version = ">=0.32.0,<1.0.0", optional = true}
+
+# Optional: PostgreSQL support
+psycopg = {version = ">=3.0.0,<4.0.0", optional = true}
+psycopg-pool = {version = ">=3.0.0,<4.0.0", optional = true}
+langgraph-checkpoint-postgres = {version = "^3.1.0", optional = true}
+
+# Optional: SQLite support
+langgraph-checkpoint-sqlite = {version = "^3.1.0", optional = true}
+
+# Optional: Scheduler
+apscheduler = {version = "^3.11.3", optional = true}
+
+[tool.poetry.extras]
+pdf = ["PyPDF2"]
+api = ["fastapi", "uvicorn"]
+postgres = ["psycopg", "psycopg-pool", "langgraph-checkpoint-postgres"]
+sqlite = ["langgraph-checkpoint-sqlite"]
+scheduler = ["apscheduler"]
+all = ["PyPDF2", "fastapi", "uvicorn", "psycopg", "psycopg-pool", "langgraph-checkpoint-postgres", "langgraph-checkpoint-sqlite", "apscheduler"]
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.4.0"
+pytest-asyncio = "^0.21.0"
+black = "^23.0.0"
+ruff = "^0.1.0"
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"

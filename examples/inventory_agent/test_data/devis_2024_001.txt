@@ -1,0 +1,34 @@
+
+DEVIS N° 2024-001
+==================
+
+Date: 15/07/2024
+Client: Marie Martin
+Société: InnoSoft
+Email: marie.martin@example.com
+
+DÉTAILS DE LA COMMANDE
+-----------------------
+
+Produit: Webcam HD
+Quantité: 15
+Prix unitaire: 79.99 €
+Total: 1,199.85 €
+
+Produit: Casque Audio Sony
+Quantité: 10
+Prix unitaire: 199.99 €
+Total: 1,999.90 €
+
+Produit: Hub USB-C
+Quantité: 25
+Prix unitaire: 49.99 €
+Total: 1,249.75 €
+
+TOTAL GÉNÉRAL: 4,449.50 €
+
+Validité du devis: 30 jours
+Délai de livraison: 5-7 jours ouvrés
+
+---
+Pour valider ce devis, merci de nous retourner ce document signé.

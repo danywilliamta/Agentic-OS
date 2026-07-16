@@ -1,0 +1,156 @@
+# Customer Support Agent Configuration
+# A practical test agent that demonstrates the platform capabilities
+
+agent_id: customer-support-agent
+name: Customer Support Agent
+description: Intelligent customer support agent with database, email, and content generation capabilities
+
+# Model configuration
+model:
+  provider: anthropic
+  name: claude-sonnet-4-6
+  temperature: 0.7
+
+# System prompt
+system_prompt: |
+  You are an intelligent customer support agent for an e-commerce platform.
+
+  Your responsibilities:
+  - Answer customer questions by querying the customer database
+  - Send email notifications to customers when needed
+  - Generate helpful content and responses
+  - Check order status and product information via API
+
+  Guidelines:
+  - Always be polite, professional, and empathetic
+  - Verify customer identity before sharing sensitive information
+  - Offer solutions and alternatives when possible
+  - Escalate complex issues appropriately
+  - Keep responses concise but complete
+
+  Available Tools:
+  - get_customer_info: Query customer data from database
+  - check_order_status: Check order status via API
+  - send_customer_email: Send emails to customers (requires approval)
+  - generate_response: Generate detailed content using AI
+
+  Remember: Always confirm before sending emails!
+
+# Tools configuration
+tools:
+  # 1. Database tool - Query customer information
+  - name: get_customer_info
+    type: generic_db_query
+    description: |
+      Query customer information from the database.
+      Use this to look up customer details, order history, preferences, etc.
+      Example queries:
+      - SELECT * FROM customers WHERE email = 'customer@example.com'
+      - SELECT * FROM orders WHERE customer_id = 123 ORDER BY created_at DESC
+    config:
+      connection_string: ${DATABASE_URL}
+
+  # 2. API tool - Check order status
+  - name: check_order_status
+    type: generic_api_call
+    description: |
+      Check the current status of an order via the order management API.
+      Provides real-time order tracking information.
+    config:
+      endpoint: ${ORDER_API_ENDPOINT}/orders
+      method: GET
+      auth_type: bearer
+      auth_token: ${ORDER_API_TOKEN}
+      headers:
+        Accept: application/json
+
+  # 3. Email tool - Send customer notifications
+  - name: send_customer_email
+    type: generic_email_sender
+    description: |
+      Send email notifications to customers.
+      Use this for order confirmations, support responses, updates, etc.
+      IMPORTANT: This requires approval before sending.
+    config:
+      smtp_host: ${SMTP_HOST}
+      smtp_port: 587
+      smtp_user: ${SMTP_USER}
+      smtp_password: ${SMTP_PASSWORD}
+      from_email: ${SMTP_FROM_EMAIL}
+      from_name: Customer Support Team
+
+  # 4. Content generation tool - Generate detailed responses
+  - name: generate_response
+    type: generic_content_generator
+    description: |
+      Generate detailed content for complex customer inquiries.
+      Use this when you need to create comprehensive responses, FAQs, or explanations.
+    config:
+      llm_provider: anthropic
+      api_key: ${ANTHROPIC_API_KEY}
+      model: claude-sonnet-4-6
+      temperature: 0.7
+
+  # 5. API tool - Get product information
+  - name: get_product_info
+    type: generic_api_call
+    description: |
+      Retrieve detailed product information from the product catalog API.
+      Use this to answer questions about products, pricing, availability.
+    config:
+      endpoint: ${PRODUCT_API_ENDPOINT}/products
+      method: GET
+      auth_type: bearer
+      auth_token: ${PRODUCT_API_TOKEN}
+
+# Backend configuration - Store customer interaction data
+backend:
+  type: composite
+  default: state
+  routes:
+    /customer_data/: store      # Long-term customer data
+    /conversation/: store        # Conversation history
+
+# Checkpointer - Save conversation state
+checkpointer:
+  type: postgres
+  connection_string: ${DATABASE_URL}
+
+# Store configuration - Enable long-term memory
+store:
+  enabled: true
+  type: postgres
+  connection_string: ${DATABASE_URL}
+
+# Permissions - Control tool execution
+permissions:
+  # Require approval before sending emails
+  - tool: send_customer_email
+    mode: interrupt
+
+  # Allow database queries without approval (read-only)
+  - tool: get_customer_info
+    mode: allow
+
+  # Allow API calls without approval
+  - tool: check_order_status
+    mode: allow
+
+  - tool: get_product_info
+    mode: allow
+
+  # Allow content generation without approval
+  - tool: generate_response
+    mode: allow
+
+# Scheduled triggers (optional)
+triggers:
+  # Daily summary of customer interactions
+  - type: cron
+    schedule: "0 18 * * *"  # Every day at 6 PM
+    action: generate_daily_summary
+
+  # Weekly customer satisfaction check
+  - type: cron
+    schedule: "0 10 * * 1"  # Every Monday at 10 AM
+    action: weekly_satisfaction_check
