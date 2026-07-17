@@ -2,10 +2,13 @@
 Tool Registry - Central registry for all generic tools.
 """
 
-from typing import Dict, Callable, Any, Optional
+import types
+from typing import Dict, Callable, Any, Optional, Union, get_args, get_origin, Literal
 from dataclasses import dataclass
 from functools import partial
 import inspect
+
+from docstring_parser import parse as parse_docstring
 
 
 @dataclass
@@ -61,9 +64,60 @@ class ToolRegistry:
         else:
             return decorator(func)
 
+    def _annotation_to_json_schema(self, annotation: Any) -> Dict[str, Any]:
+        """
+        Convert a Python type annotation to a JSON schema fragment.
+
+        Handles the annotation shapes tools actually use: plain types, `Optional[X]`/
+        `X | None`, `Literal[...]` (→ enum), and `list[X]`/`List[X]` (→ array + items).
+        Anything unrecognized falls back to "string" rather than raising, since the
+        LLM-facing schema should degrade gracefully instead of blocking registration.
+        """
+        origin = get_origin(annotation)
+
+        # Optional[X] / X | None → unwrap to the non-None member
+        if origin in (Union, types.UnionType):
+            args = [a for a in get_args(annotation) if a is not type(None)]
+            if len(args) == 1:
+                return self._annotation_to_json_schema(args[0])
+            # Multiple non-None members: no single JSON type fits, degrade to string.
+            return {"type": "string"}
+
+        if origin is Literal:
+            values = get_args(annotation)
+            value_type = type(values[0]) if values else str
+            base = self._annotation_to_json_schema(value_type)
+            base["enum"] = list(values)
+            return base
+
+        if origin in (list, tuple, set):
+            item_args = get_args(annotation)
+            items_schema = self._annotation_to_json_schema(item_args[0]) if item_args else {"type": "string"}
+            return {"type": "array", "items": items_schema}
+
+        type_map = {
+            str: "string",
+            int: "integer",
+            float: "number",
+            bool: "boolean",
+            dict: "object",
+            list: "array",
+        }
+        return {"type": type_map.get(annotation, "string")}
+
     def _extract_schema(self, func: Callable) -> Dict[str, Any]:
-        """Extract parameters schema from function signature."""
+        """
+        Extract a JSON parameters schema from a function's signature and docstring.
+
+        Per-parameter descriptions come from the docstring (Google/NumPy/ReST style,
+        auto-detected) when present — this is what surfaces field-level guidance to
+        the LLM (e.g. "onboarding_done: only true once every section is covered")
+        without requiring tool authors to hand-write a JSON schema.
+        """
         sig = inspect.signature(func)
+        parsed_doc = parse_docstring(func.__doc__ or "")
+        param_docs = {p.arg_name: p.description for p in parsed_doc.params if p.description}
+
         schema = {
             "type": "object",
             "properties": {},
@@ -75,20 +129,11 @@ class ToolRegistry:
                 continue
 
             param_type = param.annotation if param.annotation != inspect.Parameter.empty else str
+            prop_schema = self._annotation_to_json_schema(param_type)
+            if param_name in param_docs:
+                prop_schema["description"] = param_docs[param_name]
 
-            # Map Python types to JSON schema types
-            type_map = {
-                str: "string",
-                int: "integer",
-                float: "number",
-                bool: "boolean",
-                dict: "object",
-                list: "array",
-            }
-
-            schema["properties"][param_name] = {
-                "type": type_map.get(param_type, "string")
-            }
+            schema["properties"][param_name] = prop_schema
 
             if param.default == inspect.Parameter.empty:
                 schema["required"].append(param_name)
