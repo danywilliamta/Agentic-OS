@@ -3,7 +3,7 @@ Tool Registry - Central registry for all generic tools.
 """
 
 import types
-from typing import Dict, Callable, Any, Optional, Union, get_args, get_origin, Literal
+from typing import Dict, Callable, Any, Optional, Union, get_args, get_origin, get_type_hints, Literal
 from dataclasses import dataclass
 from functools import partial
 import inspect
@@ -118,6 +118,17 @@ class ToolRegistry:
         parsed_doc = parse_docstring(func.__doc__ or "")
         param_docs = {p.arg_name: p.description for p in parsed_doc.params if p.description}
 
+        # Modules using `from __future__ import annotations` (or plain string
+        # forward refs) leave `param.annotation` as a str — get_type_hints()
+        # resolves those back to real type objects via the function's
+        # __globals__ so Literal/Union/list introspection below still works.
+        # Falls back to raw signature annotations if resolution fails (e.g.
+        # a forward ref to a name not in scope).
+        try:
+            resolved_hints = get_type_hints(func)
+        except Exception:
+            resolved_hints = {}
+
         schema = {
             "type": "object",
             "properties": {},
@@ -128,7 +139,12 @@ class ToolRegistry:
             if param_name in ("self", "cls"):
                 continue
 
-            param_type = param.annotation if param.annotation != inspect.Parameter.empty else str
+            if param_name in resolved_hints:
+                param_type = resolved_hints[param_name]
+            elif param.annotation != inspect.Parameter.empty and not isinstance(param.annotation, str):
+                param_type = param.annotation
+            else:
+                param_type = str
             prop_schema = self._annotation_to_json_schema(param_type)
             if param_name in param_docs:
                 prop_schema["description"] = param_docs[param_name]
