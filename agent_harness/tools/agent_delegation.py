@@ -60,6 +60,11 @@ async def agent_delegation(
             "success": True,
             "agent": target_agent_id,
             "result": result.get("response", "No response"),
+            # Forwarded from the delegated agent's own invoke() — without
+            # this, any tool call the delegated agent made (and its result)
+            # is invisible to the delegating caller, even though invoke()
+            # already exposes it one level down.
+            "tool_calls": result.get("tool_calls", []),
             "metadata": result.get("metadata", {}),
         }
 
