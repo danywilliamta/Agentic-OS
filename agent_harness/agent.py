@@ -143,6 +143,33 @@ class Agent:
 
         return "\n".join(lines) if lines else ""
 
+    def _extract_tool_calls(self, messages: List) -> List[Dict[str, Any]]:
+        """
+        Extract structured tool call/result pairs from a turn's message list.
+
+        `invoke()` only surfaced the final text reply — callers had no way to
+        read a tool's return value (e.g. a tool that computes a structured
+        side result meant for the caller, not for the model to restate).
+        Matches each tool_call by id to its ToolMessage result.
+        """
+        calls_by_id: Dict[str, Dict[str, Any]] = {}
+        order: List[str] = []
+        for msg in messages:
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tool_call in msg.tool_calls:
+                    tc_id = tool_call.get("id")
+                    calls_by_id[tc_id] = {
+                        "name": tool_call.get("name"),
+                        "args": tool_call.get("args", {}),
+                        "result": None,
+                    }
+                    order.append(tc_id)
+            if hasattr(msg, "type") and msg.type == "tool":
+                tc_id = getattr(msg, "tool_call_id", None)
+                if tc_id in calls_by_id:
+                    calls_by_id[tc_id]["result"] = getattr(msg, "content", None)
+        return [calls_by_id[tc_id] for tc_id in order]
+
     async def _process_agent_response(self, user_id: str, input_data, message: str = "") -> Dict[str, Any]:
         """
         Internal method to process agent execution and handle interruptions.
@@ -277,6 +304,7 @@ class Agent:
             "agent_id": self.agent_id,
             "thread_id": thread_id,
             "response": response_message,
+            "tool_calls": self._extract_tool_calls(result.get("messages", [])),
             "metadata": {
                 "model": self.config.get("model", {}).get("name"),
                 "usage": result.get("usage") if result else None,
