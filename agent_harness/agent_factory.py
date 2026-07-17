@@ -8,7 +8,7 @@ import sqlite3
 from typing import Dict, List, Callable, Any
 from deepagents import create_deep_agent
 from deepagents.backends import StateBackend, StoreBackend, CompositeBackend
-from langgraph.checkpoint.postgres import PostgresSaver
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.store.postgres import PostgresStore
@@ -22,8 +22,9 @@ class AgentFactory:
 
     def __init__(self):
         self.agents_cache: Dict[str, Agent] = {}
+        self._checkpointer_contexts: List = []  # Keep context managers alive
 
-    def create_from_file(self, config_path: str) -> Agent:
+    async def create_from_file(self, config_path: str) -> Agent:
         """
         Create agent from YAML config file.
 
@@ -36,9 +37,9 @@ class AgentFactory:
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
-        return self.create_from_dict(config)
+        return await self.create_from_dict(config)
 
-    def create_from_dict(self, config: Dict) -> Agent:
+    async def create_from_dict(self, config: Dict) -> Agent:
         """
         Create agent from configuration dictionary.
 
@@ -62,7 +63,7 @@ class AgentFactory:
 
         # Configure checkpointer
         print(f"💾 Configuring checkpointer...")
-        checkpointer = self._configure_checkpointer(config.get("checkpointer", {}))
+        checkpointer = await self._configure_checkpointer(config.get("checkpointer", {}))
         checkpointer_type = config.get("checkpointer", {}).get("type", "none")
         print(f"✅ Checkpointer: {checkpointer_type}")
 
@@ -149,7 +150,7 @@ class AgentFactory:
         else:
             return StateBackend()
 
-    def _configure_checkpointer(self, checkpointer_config: Dict):
+    async def _configure_checkpointer(self, checkpointer_config: Dict):
         """Configure checkpointer from config."""
         # Check if checkpointer is disabled
         if not checkpointer_config.get("enabled", True):
@@ -159,8 +160,15 @@ class AgentFactory:
 
         if cp_type == "postgres":
             conn_str = self._resolve_env_var(checkpointer_config.get("connection_string", os.getenv("DATABASE_URL")))
-            pool_size = checkpointer_config.get("pool_size", 10)  # Default: 10 connections
-            return PostgresSaver(conn_str, pool_size=pool_size)
+
+            # Create and setup async checkpointer
+            # We need to enter the context manager and keep it alive
+            ctx_mgr = AsyncPostgresSaver.from_conn_string(conn_str)
+            checkpointer = await ctx_mgr.__aenter__()
+            await checkpointer.setup()
+            # Store context manager to keep connection alive
+            self._checkpointer_contexts.append((ctx_mgr, checkpointer))
+            return checkpointer
 
         elif cp_type == "sqlite":
             # Note: AsyncSqliteSaver requires complex setup with context managers
