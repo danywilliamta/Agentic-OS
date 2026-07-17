@@ -235,17 +235,25 @@ class Agent:
         else:
             raw_content = last_message["content"]
 
-        # Extract text from content
-        if isinstance(raw_content, list) and len(raw_content) > 0:
-            first_block = raw_content[0]
-            if isinstance(first_block, dict) and first_block.get("type") == "text":
-                response_message = first_block.get("text", str(raw_content))
-            else:
-                response_message = str(raw_content)
+        # Extract text from content. Content blocks aren't always [text] or
+        # [text, ...] — extended thinking models commonly emit
+        # [thinking, text] or end a tool-only turn with no text block at all
+        # (e.g. a prompt instructing a "silent" tool call). Scanning by index
+        # 0 alone misidentifies both cases; scan every block for text instead,
+        # and fall back to "" (not "[]"/str(raw_content)) when none is found —
+        # an empty turn is a legitimate outcome, not something to surface as
+        # literal Python repr to the end user.
+        if isinstance(raw_content, list):
+            text_parts = [
+                block.get("text", "")
+                for block in raw_content
+                if isinstance(block, dict) and block.get("type") == "text"
+            ]
+            response_message = "\n".join(part for part in text_parts if part)
         elif isinstance(raw_content, str):
             response_message = raw_content
         else:
-            response_message = str(raw_content)
+            response_message = str(raw_content) if raw_content else ""
 
         # Display final tool calls and results
         if "messages" in result:
