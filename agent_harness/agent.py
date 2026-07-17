@@ -8,6 +8,29 @@ from langgraph.types import Command
 from langgraph.types import Command
 
 
+def _extract_text(raw_content) -> str:
+    """
+    Extract plain text from a message's `content`.
+
+    Content blocks aren't always `[text]` or `[text, ...]` — extended thinking
+    models commonly emit `[thinking, text]` or end a tool-only turn with no
+    text block at all (e.g. a "silent" tool call). Scanning by index 0 alone
+    misidentifies both cases; scan every block for text instead, and fall
+    back to "" (not `str(raw_content)`) when none is found — an empty turn is
+    a legitimate outcome, not something to surface as literal Python repr.
+    """
+    if isinstance(raw_content, list):
+        text_parts = [
+            block.get("text", "")
+            for block in raw_content
+            if isinstance(block, dict) and block.get("type") == "text"
+        ]
+        return "\n".join(part for part in text_parts if part)
+    if isinstance(raw_content, str):
+        return raw_content
+    return str(raw_content) if raw_content else ""
+
+
 class Agent:
     """
     Agent wrapper around Deep Agent.
@@ -262,25 +285,7 @@ class Agent:
         else:
             raw_content = last_message["content"]
 
-        # Extract text from content. Content blocks aren't always [text] or
-        # [text, ...] — extended thinking models commonly emit
-        # [thinking, text] or end a tool-only turn with no text block at all
-        # (e.g. a prompt instructing a "silent" tool call). Scanning by index
-        # 0 alone misidentifies both cases; scan every block for text instead,
-        # and fall back to "" (not "[]"/str(raw_content)) when none is found —
-        # an empty turn is a legitimate outcome, not something to surface as
-        # literal Python repr to the end user.
-        if isinstance(raw_content, list):
-            text_parts = [
-                block.get("text", "")
-                for block in raw_content
-                if isinstance(block, dict) and block.get("type") == "text"
-            ]
-            response_message = "\n".join(part for part in text_parts if part)
-        elif isinstance(raw_content, str):
-            response_message = raw_content
-        else:
-            response_message = str(raw_content) if raw_content else ""
+        response_message = _extract_text(raw_content)
 
         # Display final tool calls and results
         if "messages" in result:
@@ -352,6 +357,41 @@ class Agent:
         # Stream events
         async for event in self._deep_agent.astream_events({"messages": [message_dict]}, config):
             yield event
+
+    async def get_history(self, user_id: str) -> List[Dict[str, str]]:
+        """
+        Return this thread's conversation as simple `{role, content}` turns, for display.
+
+        Reads the graph's current state via the checkpointer instead of a separate
+        history store — the checkpointer (keyed by `thread_id`) is already the single
+        source of truth for conversation memory, so a caller displaying history to a
+        user doesn't need a second, independently-maintained copy of it.
+
+        Tool-call/tool-result messages (`ToolMessage`, or an `AIMessage` turn that
+        only contains tool calls with no text) are omitted — they're implementation
+        detail, not a conversational turn a user should see.
+        """
+        thread_id = f"{self.agent_id}-{user_id}"
+        config = {"configurable": {"thread_id": thread_id}}
+        snapshot = await self._deep_agent.aget_state(config)
+
+        turns: List[Dict[str, str]] = []
+        for msg in snapshot.values.get("messages", []):
+            msg_type = getattr(msg, "type", None)
+            if msg_type not in ("human", "ai"):
+                continue
+            text = _extract_text(getattr(msg, "content", None))
+            if not text:
+                continue
+            turns.append({"role": "user" if msg_type == "human" else "assistant", "content": text})
+        return turns
+
+    async def clear_history(self, user_id: str) -> None:
+        """Delete this thread's checkpointed state — resets the conversation."""
+        thread_id = f"{self.agent_id}-{user_id}"
+        checkpointer = self._deep_agent.checkpointer
+        if checkpointer is not None:
+            await checkpointer.adelete_thread(thread_id)
 
     def get_config(self) -> Dict:
         """Get agent configuration."""
