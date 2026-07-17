@@ -5,8 +5,9 @@ Agent Factory - Creates agents dynamically from YAML configuration.
 import os
 import yaml
 import sqlite3
-from typing import Dict, List, Callable, Any
+from typing import Dict, List, Callable, Any, Optional, Sequence
 from deepagents import create_deep_agent
+from langchain.agents.middleware.types import AgentMiddleware
 from deepagents.backends import StateBackend, StoreBackend, CompositeBackend
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -24,12 +25,18 @@ class AgentFactory:
         self.agents_cache: Dict[str, Agent] = {}
         self._checkpointer_contexts: List = []  # Keep context managers alive
 
-    async def create_from_file(self, config_path: str) -> Agent:
+    async def create_from_file(
+        self, config_path: str, middleware: Optional[Sequence[AgentMiddleware]] = None
+    ) -> Agent:
         """
         Create agent from YAML config file.
 
         Args:
             config_path: Path to YAML configuration file
+            middleware: Optional AgentMiddleware instances (e.g. to refresh
+                per-call dynamic context via `awrap_model_call`/`abefore_model`).
+                Not YAML-expressible since middleware typically closes over
+                live Python objects (DB sessions, per-tenant identifiers).
 
         Returns:
             Configured Agent instance
@@ -37,14 +44,21 @@ class AgentFactory:
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
-        return await self.create_from_dict(config)
+        return await self.create_from_dict(config, middleware=middleware)
 
-    async def create_from_dict(self, config: Dict) -> Agent:
+    async def create_from_dict(
+        self, config: Dict, middleware: Optional[Sequence[AgentMiddleware]] = None
+    ) -> Agent:
         """
         Create agent from configuration dictionary.
 
         Args:
             config: Agent configuration dict
+            middleware: Optional AgentMiddleware instances passed through to
+                `create_deep_agent`. Use this for context that must be
+                refreshed on every model call (e.g. multi-tenant data that
+                changes between invocations) instead of baking it into a
+                static `system_prompt` — see `awrap_model_call`.
 
         Returns:
             Configured Agent instance
@@ -93,6 +107,7 @@ class AgentFactory:
             checkpointer=checkpointer,
             store=store if store else None,
             interrupt_on=interrupt_on,
+            middleware=middleware or (),
         )
 
         # Wrap in Agent class
