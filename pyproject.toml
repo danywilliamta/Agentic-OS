@@ -38,7 +38,7 @@ PyPDF2 = ">=3.0.0,<4.0.0"
 fastapi = ">=0.115.0,<1.0.0"
 uvicorn = ">=0.32.0,<1.0.0"
 # PostgreSQL support
-psycopg = ">=3.0.0,<4.0.0"
+psycopg = {version = ">=3.0.0,<4.0.0", extras = ["binary"]}
 psycopg-pool = ">=3.0.0,<4.0.0"
 langgraph-checkpoint-postgres = "^3.1.0"
 # SQLite support
