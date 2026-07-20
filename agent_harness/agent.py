@@ -2,10 +2,13 @@
 Agent Wrapper - Wraps Deep Agent with invoke and history management.
 """
 
+import logging
 from typing import Dict, List, Any, Optional
 from deepagents import create_deep_agent
 from langgraph.types import Command
 from langgraph.types import Command
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_text(raw_content) -> str:
@@ -209,8 +212,8 @@ class Agent:
         config = {"configurable": {"thread_id": thread_id}}
 
         if message:
-            print(f"\nUser message: {message}")
-        print(f"Processing with thread_id: {thread_id}")
+            logger.info("User message: %s", message)
+        logger.info("Processing with thread_id: %s", thread_id)
 
         # Invoke agent (blocks until done or interrupted)
         result = await self._deep_agent.ainvoke(input_data, config)
@@ -219,13 +222,11 @@ class Agent:
         if "messages" in result:
             tool_output = self._format_tool_calls(result["messages"])
             if tool_output:
-                print("\n" + "═" * 60)
-                print(tool_output)
-                print("═" * 60)
+                logger.info("\n%s\n%s\n%s", "═" * 60, tool_output, "═" * 60)
 
         # Display todos if present
         if "todos" in result and result["todos"]:
-            print(self._format_todos(result["todos"]))
+            logger.info(self._format_todos(result["todos"]))
 
         # Check if interrupted
         if "__interrupt__" in result:
@@ -240,8 +241,7 @@ class Agent:
                 action_requests = []
 
             num_actions = len(action_requests)
-            print(f"\n⏸ INTERRUPTED - {num_actions} tool call(s) need approval")
-            print("=" * 60)
+            logger.info("INTERRUPTED - %d tool call(s) need approval", num_actions)
 
             # Collect decisions for each tool call
             decisions = []
@@ -251,8 +251,7 @@ class Agent:
                     tool_name = action.get("name", "unknown")
                     tool_args = action.get("args", {})
 
-                    print(f"\n[{i}/{num_actions}] Tool: {tool_name}")
-                    print(f"   Args: {tool_args}")
+                    logger.info("[%d/%d] Tool: %s | Args: %s", i, num_actions, tool_name, tool_args)
 
                     # Ask for individual approval
                     user_input = input(f"   Approve this tool call? (y/n): ").strip().lower()
@@ -261,10 +260,9 @@ class Agent:
                     decision = {"type": "approve" if approve else "reject"}
                     decisions.append(decision)
 
-                    print(f"   → {'✅ Approved' if approve else '❌ Rejected'}")
+                    logger.info("→ %s", "Approved" if approve else "Rejected")
 
-                print("\n" + "=" * 60)
-                print(f"Resuming with {len(decisions)} decision(s)...")
+                logger.info("Resuming with %d decision(s)...", len(decisions))
 
                 # Resume with all decisions
                 return await self._process_agent_response(
@@ -272,7 +270,7 @@ class Agent:
                 )
 
             except (EOFError, KeyboardInterrupt):
-                print("\n   Interrupted by user, rejecting all by default")
+                logger.info("Interrupted by user, rejecting all by default")
                 decisions = [{"type": "reject"}] * num_actions
                 return await self._process_agent_response(
                     user_id=user_id, input_data=Command(resume={"decisions": decisions}), message=""
@@ -291,18 +289,15 @@ class Agent:
         if "messages" in result:
             tool_output = self._format_tool_calls(result["messages"])
             if tool_output:
-                print("\n" + "═" * 60)
-                print(tool_output)
-                print("═" * 60)
+                logger.info("\n%s\n%s\n%s", "═" * 60, tool_output, "═" * 60)
 
         # Display final todos if present
         if "todos" in result and result["todos"]:
-            print(self._format_todos(result["todos"]))
+            logger.info(self._format_todos(result["todos"]))
 
-        print(
-            f"\n🤖 Agent response: {response_message[:200]}..."
-            if len(response_message) > 200
-            else f"\n🤖 Agent response: {response_message}"
+        logger.info(
+            "Agent response: %s",
+            response_message[:200] + "..." if len(response_message) > 200 else response_message,
         )
 
         return {
@@ -354,9 +349,25 @@ class Agent:
         if context:
             message_dict["metadata"] = context
 
+        logger.info("User message: %s", message)
+        logger.info("Processing with thread_id: %s", thread_id)
+
         # Stream events
         async for event in self._deep_agent.astream_events({"messages": [message_dict]}, config):
             yield event
+
+        # astream_events ne renvoie que des events bas niveau, pas le state final
+        # (contrairement à ainvoke ci-dessus) — on relit l'état du graphe via le
+        # checkpointer pour logger le même détail tool calls/todos que invoke().
+        snapshot = await self._deep_agent.aget_state(config)
+        messages = snapshot.values.get("messages", [])
+        tool_output = self._format_tool_calls(messages)
+        if tool_output:
+            logger.info("\n%s\n%s\n%s", "═" * 60, tool_output, "═" * 60)
+
+        todos = snapshot.values.get("todos")
+        if todos:
+            logger.info(self._format_todos(todos))
 
     async def get_history(self, user_id: str) -> List[Dict[str, str]]:
         """
