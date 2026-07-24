@@ -40,18 +40,43 @@ class Agent:
     Handles invocation and automatic history persistence.
     """
 
-    def __init__(self, agent_id: str, deep_agent, config: Dict):
+    def __init__(self, agent_id: str, deep_agent, config: Dict, tenant_id: Optional[str] = None):
         """
         Initialize agent.
 
         Args:
-            agent_id: Unique agent identifier
+            agent_id: Agent type identifier, as declared in config (e.g. "support-bot",
+                "strategy_advisor"). Stays the same across tenants — see `tenant_id`.
             deep_agent: Configured Deep Agent instance
             config: Agent configuration dict
+            tenant_id: Optional per-tenant scope (e.g. a workspace/customer id) for
+                multi-tenant deployments where one `agent_id` must serve many
+                independent tenants, each needing its own cache slot and its own
+                conversation memory. Leave `None` for a single-tenant deployment
+                (e.g. one Slack support bot) — behavior is then identical to before
+                this parameter existed.
         """
         self.agent_id = agent_id
+        self.tenant_id = tenant_id
         self._deep_agent = deep_agent
         self.config = config
+
+    @staticmethod
+    def make_key(agent_id: str, tenant_id: Optional[str] = None) -> str:
+        """Single source of truth for the (agent_id, tenant_id) composite identity.
+
+        Used both as the `AgentFactory.agents_cache` key and as the thread_id
+        namespace below. Callers that need to reference another tenant-scoped
+        agent instance (e.g. building `allowed_agents` for delegation) must go
+        through this instead of hand-formatting the string themselves — keeps
+        the format defined in exactly one place.
+        """
+        return f"{agent_id}:{tenant_id}" if tenant_id else agent_id
+
+    @property
+    def instance_key(self) -> str:
+        """This agent's own composite identity — see `make_key`."""
+        return Agent.make_key(self.agent_id, self.tenant_id)
 
     def _format_todos(self, todos: List[Dict]) -> str:
         """
@@ -208,7 +233,7 @@ class Agent:
         Returns:
             Dict with response and metadata
         """
-        thread_id = f"{self.agent_id}-{user_id}"
+        thread_id = f"{self.instance_key}-{user_id}"
         config = {"configurable": {"thread_id": thread_id}}
 
         if message:
@@ -302,6 +327,7 @@ class Agent:
 
         return {
             "agent_id": self.agent_id,
+            "tenant_id": self.tenant_id,
             "thread_id": thread_id,
             "response": response_message,
             "tool_calls": self._extract_tool_calls(result.get("messages", [])),
@@ -341,7 +367,7 @@ class Agent:
 
         Yields events from the agent execution.
         """
-        thread_id = f"{self.agent_id}-{user_id}"
+        thread_id = f"{self.instance_key}-{user_id}"
 
         config = {"configurable": {"thread_id": thread_id}}
 
@@ -382,7 +408,7 @@ class Agent:
         only contains tool calls with no text) are omitted — they're implementation
         detail, not a conversational turn a user should see.
         """
-        thread_id = f"{self.agent_id}-{user_id}"
+        thread_id = f"{self.instance_key}-{user_id}"
         config = {"configurable": {"thread_id": thread_id}}
         snapshot = await self._deep_agent.aget_state(config)
 
@@ -399,7 +425,7 @@ class Agent:
 
     async def clear_history(self, user_id: str) -> None:
         """Delete this thread's checkpointed state — resets the conversation."""
-        thread_id = f"{self.agent_id}-{user_id}"
+        thread_id = f"{self.instance_key}-{user_id}"
         checkpointer = self._deep_agent.checkpointer
         if checkpointer is not None:
             await checkpointer.adelete_thread(thread_id)

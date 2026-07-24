@@ -26,7 +26,10 @@ class AgentFactory:
         self._checkpointer_contexts: List = []  # Keep context managers alive
 
     async def create_from_file(
-        self, config_path: str, middleware: Optional[Sequence[AgentMiddleware]] = None
+        self,
+        config_path: str,
+        middleware: Optional[Sequence[AgentMiddleware]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Agent:
         """
         Create agent from YAML config file.
@@ -37,6 +40,7 @@ class AgentFactory:
                 per-call dynamic context via `awrap_model_call`/`abefore_model`).
                 Not YAML-expressible since middleware typically closes over
                 live Python objects (DB sessions, per-tenant identifiers).
+            tenant_id: Optional per-tenant scope — see `create_from_dict`.
 
         Returns:
             Configured Agent instance
@@ -44,10 +48,13 @@ class AgentFactory:
         with open(config_path, "r") as f:
             config = yaml.safe_load(f)
 
-        return await self.create_from_dict(config, middleware=middleware)
+        return await self.create_from_dict(config, middleware=middleware, tenant_id=tenant_id)
 
     async def create_from_dict(
-        self, config: Dict, middleware: Optional[Sequence[AgentMiddleware]] = None
+        self,
+        config: Dict,
+        middleware: Optional[Sequence[AgentMiddleware]] = None,
+        tenant_id: Optional[str] = None,
     ) -> Agent:
         """
         Create agent from configuration dictionary.
@@ -59,6 +66,14 @@ class AgentFactory:
                 refreshed on every model call (e.g. multi-tenant data that
                 changes between invocations) instead of baking it into a
                 static `system_prompt` — see `awrap_model_call`.
+            tenant_id: Optional per-tenant scope (e.g. a workspace/customer id).
+                When set, this agent is cached and its conversation memory is
+                namespaced under `Agent.make_key(agent_id, tenant_id)` instead
+                of the bare `agent_id` — lets one `agent_id` (one YAML config)
+                serve many independent tenants, each getting its own cache slot
+                and its own thread history. Leave `None` for a single-tenant
+                deployment (unchanged behavior). See `TenantAgentPool` for the
+                higher-level orchestration built on top of this.
 
         Returns:
             Configured Agent instance
@@ -111,12 +126,14 @@ class AgentFactory:
         )
 
         # Wrap in Agent class
-        agent = Agent(agent_id, deep_agent, config)
+        agent = Agent(agent_id, deep_agent, config, tenant_id=tenant_id)
 
-        # Cache agent
-        self.agents_cache[agent_id] = agent
+        # Cache agent — keyed by the composite (agent_id, tenant_id) identity,
+        # so create_from_dict can be called again for the same agent_id under a
+        # different tenant_id without evicting the first tenant's instance.
+        self.agents_cache[agent.instance_key] = agent
 
-        print(f"✅ Agent '{agent_id}' created successfully!\n")
+        print(f"✅ Agent '{agent.instance_key}' created successfully!\n")
         return agent
 
     def _configure_tools(self, tools_config: List[Dict]) -> List[Callable]:
@@ -243,7 +260,7 @@ class AgentFactory:
         return value
 
     def get_agent(self, agent_id: str) -> Agent:
-        """Get cached agent by ID."""
+        """Get cached agent by ID (the composite `Agent.make_key(agent_id, tenant_id)` for tenant-scoped agents)."""
         return self.agents_cache.get(agent_id)
 
     def list_agents(self) -> List[str]:

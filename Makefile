@@ -1,4 +1,4 @@
-.PHONY: help install start stop logs test clean
+.PHONY: help install start stop logs test test-unit clean
 
 help:
 	@echo "Agent Harness Platform - Commands:"
@@ -9,6 +9,7 @@ help:
 	@echo "  make logs       - View logs"
 	@echo "  make restart    - Restart platform"
 	@echo "  make test       - Test API endpoints"
+	@echo "  make test-unit  - Run unit tests (pytest)"
 	@echo "  make clean      - Clean containers and data"
 	@echo ""
 
@@ -35,6 +36,9 @@ test:
 	@echo ""
 	@echo "Tools:"
 	@curl -s http://localhost:8000/admin/tools/categories | python -m json.tool
+
+test-unit:
+	.venv/bin/python -m pytest tests/ --cov=agent_harness --cov-report=term-missing
 
 clean:
 	docker-compose down -v

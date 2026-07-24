@@ -2,6 +2,7 @@
 Agent Delegation Tool - Delegate tasks to specialized agents.
 """
 
+import uuid
 from typing import Dict, Any, Optional, List
 from agent_harness.tool_registry import tool_registry
 
@@ -20,7 +21,14 @@ async def agent_delegation(
     Args:
         target_agent_id: ID de l'agent cible (ex: 'inventory-agent', 'crm-agent')
         task_description: Description détaillée de la tâche à accomplir
-        user_id: ID de l'utilisateur (optionnel, récupéré du context si absent)
+        user_id: ID de l'utilisateur. Si absent (cas normal — le LLM délégateur
+            ne le fournit jamais), la délégation est stateless : un thread
+            jetable et unique est généré pour cet appel, sans mémoire des
+            délégations précédentes ni des suivantes. `task_description` doit
+            donc être autonome (c'est le contrat d'un brief de délégation).
+            Passer un user_id stable n'est utile que si l'appelant veut
+            explicitement faire persister/reprendre une conversation avec
+            l'agent délégué à travers plusieurs appels.
         context: Contexte additionnel à passer à l'agent
         allowed_agents: Liste des agents autorisés (validation)
 
@@ -52,7 +60,13 @@ async def agent_delegation(
 
         # Prepare context
         final_context = context or {}
-        final_user_id = user_id or final_context.get("user_id", "delegated-user")
+        # Pas de user_id fourni (cas normal) → id jetable unique par appel, pas
+        # de constante partagée ("delegated-user") : sinon toutes les
+        # délégations d'un même agent, tous appelants confondus, retombent sur
+        # le même thread persistant et rejouent/consomment des tokens sur de
+        # l'historique d'une tâche précédente sans rapport (voir le thread_id
+        # construit dans Agent._process_agent_response : f"{agent_id}-{user_id}").
+        final_user_id = user_id or final_context.get("user_id") or f"ephemeral-{uuid.uuid4().hex}"
 
         result = await agent.invoke(user_id=final_user_id, message=task_description, context=final_context)
 

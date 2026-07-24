@@ -31,6 +31,7 @@ from agent_harness.__version__ import (
 from agent_harness.agent import Agent
 from agent_harness.agent_factory import AgentFactory, agent_factory
 from agent_harness.tool_registry import ToolRegistry, tool_registry
+from agent_harness.tenant_pool import TenantAgentPool
 
 # Import tools to register them
 from agent_harness import tools
@@ -55,6 +56,7 @@ __all__ = [
     "agent_factory",
     "ToolRegistry",
     "tool_registry",
+    "TenantAgentPool",
     # Submodules
     "tools",
     # Public tools
