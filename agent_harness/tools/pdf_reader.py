@@ -2,34 +2,42 @@
 PDF Reader Tool - Extract text content from PDF files.
 """
 
+import os
 from typing import Dict, Any
 from agent_harness.tool_registry import tool_registry
 
 
 @tool_registry.register(category="document")
 def read_pdf(
-    file_path: str
+    file_path: str,
+    base_path: str = ""
 ) -> Dict[str, Any]:
     """
     Read and extract text content from a PDF file or text file.
 
     Args:
         file_path: Path to the PDF or TXT file to read
+        base_path: Optional base directory to prepend to file_path
 
     Returns:
         Dict with extracted text content or error
     """
     try:
+        # Combine base_path with file_path if provided
+        if base_path:
+            full_path = os.path.join(base_path, file_path)
+        else:
+            full_path = file_path
         # Check if it's a plain text file first
-        if file_path.lower().endswith('.txt'):
-            with open(file_path, 'r', encoding='utf-8') as file:
+        if full_path.lower().endswith('.txt'):
+            with open(full_path, 'r', encoding='utf-8') as file:
                 content = file.read()
 
                 return {
                     "success": True,
                     "content": content,
                     "pages": 1,
-                    "file_path": file_path,
+                    "file_path": full_path,
                     "error": None
                 }
 
@@ -38,7 +46,7 @@ def read_pdf(
         try:
             import PyPDF2
 
-            with open(file_path, 'rb') as file:
+            with open(full_path, 'rb') as file:
                 pdf_reader = PyPDF2.PdfReader(file)
                 text_content = []
 
@@ -52,7 +60,7 @@ def read_pdf(
                     "success": True,
                     "content": full_text,
                     "pages": len(pdf_reader.pages),
-                    "file_path": file_path,
+                    "file_path": full_path,
                     "error": None
                 }
 
@@ -60,7 +68,7 @@ def read_pdf(
             # Fallback to pdfplumber if available
             import pdfplumber
 
-            with pdfplumber.open(file_path) as pdf:
+            with pdfplumber.open(full_path) as pdf:
                 text_content = []
 
                 for page in pdf.pages:
@@ -72,7 +80,7 @@ def read_pdf(
                     "success": True,
                     "content": full_text,
                     "pages": len(pdf.pages),
-                    "file_path": file_path,
+                    "file_path": full_path,
                     "error": None
                 }
 
@@ -80,7 +88,7 @@ def read_pdf(
         return {
             "success": False,
             "content": None,
-            "error": f"File not found: {file_path}"
+            "error": f"File not found: {full_path}"
         }
 
     except Exception as e:

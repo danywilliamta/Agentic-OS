@@ -13,6 +13,7 @@
 - 🔧 **Tool Registry**: Reusable, configurable tools (DB, API, PDF, email, etc.)
 - 🎯 **Multi-Agent Orchestration**: Supervisor pattern with delegation
 - 💾 **Persistence**: PostgreSQL/SQLite checkpointing for conversation state
+- 📊 **Token Tracking**: Automatic cost tracking and usage analytics per agent/user/tenant
 - ⏰ **Scheduling**: Cron-style task scheduling (APScheduler + K8s CronJobs)
 - 🚀 **Production-Ready**: Docker, K8s manifests, CI/CD examples
 - 🔒 **Permissions**: Interrupt-based approval for sensitive operations
@@ -168,6 +169,117 @@ result = await supervisor.invoke(
 )
 # Supervisor automatically delegates to inventory_agent
 ```
+
+### Token Tracking
+
+Built-in cost tracking and usage analytics with zero configuration:
+
+```python
+from agent_harness import agent_factory
+
+# Token tracking auto-enabled if DATABASE_URL is set
+# No configuration needed!
+agent = await agent_factory.create_from_file("agent.yml")
+result = await agent.invoke(user_id="user123", message="Hello")
+
+# Usage automatically logged to database
+print(result["metadata"]["usage"])
+# {'input_tokens': 150, 'output_tokens': 50}
+
+# Analyze costs via CLI
+# python scripts/analyze_token_usage.py --agent-id my-agent
+# python scripts/analyze_token_usage.py --top-consumers tenant_id
+
+# Or programmatically
+from agent_harness.token_tracker import TokenUsageTracker
+
+tracker = TokenUsageTracker("postgresql://localhost/agents")
+await tracker.setup()
+
+stats = await tracker.get_usage_stats(agent_id="my-agent")
+print(f"Total cost: ${stats['total_cost_usd']:.2f}")
+print(f"Total tokens: {stats['total_tokens']:,}")
+```
+
+**Auto-Configuration**: If `DATABASE_URL` environment variable is set, token tracking is automatically enabled. No code changes required.
+
+See [`docs/TOKEN_TRACKING.md`](./docs/TOKEN_TRACKING.md) and [`docs/FACTORY_USAGE.md`](./docs/FACTORY_USAGE.md) for full documentation.
+
+---
+
+### 📊 Observability & Monitoring
+
+#### Prometheus Metrics
+
+Agent Harness automatically collects Prometheus metrics (latency, tokens, costs, errors). No code changes required!
+
+**📍 Choose your deployment pattern:**
+
+**For Development / Single Process:**
+```bash
+# Start standalone metrics server
+poetry run python scripts/metrics_server.py
+# Metrics available at http://localhost:9090/metrics
+
+# Start Prometheus
+docker-compose -f docker-compose.prometheus.yml up -d
+# Prometheus UI: http://localhost:9091
+```
+
+**For Production / Multiple Workers:** ⭐ **RECOMMENDED**
+```bash
+# Use multiprocess mode with metrics collector
+docker-compose -f docker-compose.multiworker.yml up -d
+
+# Access:
+# - Application: http://localhost:8000
+# - Metrics: http://localhost:9090/metrics
+# - Prometheus: http://localhost:9091
+```
+
+**Documentation:**
+- Single process setup: [`docs/PROMETHEUS.md`](./docs/PROMETHEUS.md)
+- **Multiple workers setup: [`docs/PROMETHEUS_MULTIPROCESS.md`](./docs/PROMETHEUS_MULTIPROCESS.md)** ← Read this for production!
+
+---
+
+#### ⚠️ LangSmith Tracing Isolation (IMPORTANT for Multi-App)
+
+**If multiple applications use this package**, you MUST specify a unique project name to prevent trace contamination:
+
+```python
+from agent_harness.agent_factory import agent_factory
+
+# ✅ CORRECT: Configure observability with unique project name
+agent_factory.configure_observability(langsmith_project="my-app-name")
+
+# Now create agents (traces will go to "my-app-name" project)
+agent = await agent_factory.create_from_file("agent.yml")
+```
+
+**Or via environment variable:**
+```bash
+export LANGSMITH_TRACING=true
+export LANGSMITH_PROJECT=my-app-name  # REQUIRED for isolation
+```
+
+**Example for multiple apps:**
+```python
+# App A (CRM)
+from agent_harness.agent_factory import agent_factory
+agent_factory.configure_observability(langsmith_project="crm-app")
+
+# App B (Support)
+from agent_harness.agent_factory import agent_factory
+agent_factory.configure_observability(langsmith_project="support-app")
+```
+
+**Why this matters:**
+- Without explicit project, tracing is **disabled by default** to prevent cross-app trace contamination
+- Each app must specify its own unique project name for proper isolation
+- Traces from App A will NOT mix with traces from App B
+
+See [`AUDIT_RECOMMENDATIONS.md`](./AUDIT_RECOMMENDATIONS.md#-problème-disolation-langsmith-multi-app) for detailed explanation.
 
 ## Installation Options
 

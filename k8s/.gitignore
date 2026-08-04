@@ -1,7 +1,0 @@
-# Never commit actual secrets!
-secrets.yaml
-*.secret.yaml
-
-# Environment-specific configs
-prod/
-staging/

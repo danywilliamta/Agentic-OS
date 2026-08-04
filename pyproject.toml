@@ -44,12 +44,15 @@ psycopg-pool = ">=3.0.0,<4.0.0"
 langgraph-checkpoint-postgres = "^3.1.0"
 # SQLite support
 langgraph-checkpoint-sqlite = "^3.1.0"
+aiosqlite = "^0.20.0"
 # Scheduler
 apscheduler = "^3.11.3"
 # HTTP requests
 requests = "^2.31.0"
 # Web search
 langchain-tavily = ">=0.2.0,<1.0.0"
+langsmith = "^0.10.15"
+prometheus-client = "^0.26.0"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^7.4.0"

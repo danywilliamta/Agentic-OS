@@ -136,3 +136,7 @@ User → Inventory Agent → Tools → SQLite DB
 - Intégrer avec un vrai système de facturation
 - Ajouter des notifications (email/Slack)
 - Déployer en production avec K8s CronJobs
+
+
+
+traite le devis brut 1

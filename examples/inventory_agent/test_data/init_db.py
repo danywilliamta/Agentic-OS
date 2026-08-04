@@ -3,9 +3,12 @@ Initialize SQLite database with test data for inventory agent testing.
 """
 
 import sqlite3
+import os
 from datetime import datetime
 
-DB_PATH = "test_inventory.db"
+# Get the directory where this script is located
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(SCRIPT_DIR, "test_inventory.db")
 
 
 def init_database():
@@ -103,10 +106,7 @@ def init_database():
         ("Pierre Dubois", "pierre.dubois@example.com", "DataFlow"),
     ]
 
-    cursor.executemany(
-        "INSERT OR IGNORE INTO users (name, email, company) VALUES (?, ?, ?)",
-        users
-    )
+    cursor.executemany("INSERT OR IGNORE INTO users (name, email, company) VALUES (?, ?, ?)", users)
 
     # Insert test stock
     stock = [
@@ -120,21 +120,18 @@ def init_database():
         ("Câble HDMI 2m", 300, 15.99),
     ]
 
-    cursor.executemany(
-        "INSERT OR IGNORE INTO stock (product_name, qty, unit_price) VALUES (?, ?, ?)",
-        stock
-    )
+    cursor.executemany("INSERT OR IGNORE INTO stock (product_name, qty, unit_price) VALUES (?, ?, ?)", stock)
 
     # Insert sample devis (header)
     sample_devis = [
-        (None, 1, "2024-TEST-001", 7500.00, "pending"),     # Jean: 5 Laptops
-        (None, 2, "2024-TEST-002", 1999.80, "pending"),     # Marie: 20 Souris
-        (None, 1, "2024-TEST-003", 4500.00, "completed"),   # Jean: 10 Écrans
+        (None, 1, "2024-TEST-001", 7500.00, "pending"),  # Jean: 5 Laptops
+        (None, 2, "2024-TEST-002", 1999.80, "pending"),  # Marie: 20 Souris
+        (None, 1, "2024-TEST-003", 4500.00, "completed"),  # Jean: 10 Écrans
     ]
 
     cursor.executemany(
         "INSERT OR IGNORE INTO devis (devis_raw_id, user_id, devis_number, total_amount, status) VALUES (?, ?, ?, ?, ?)",
-        sample_devis
+        sample_devis,
     )
 
     # Insert devis items (lines)
@@ -146,18 +143,17 @@ def init_database():
 
     cursor.executemany(
         "INSERT OR IGNORE INTO devis_items (devis_id, product_name, qty, unit_price, line_total) VALUES (?, ?, ?, ?, ?)",
-        sample_devis_items
+        sample_devis_items,
     )
 
     # Insert devis_raw (fichiers PDF/TXT à traiter)
     devis_raw_files = [
-        ("devis_2024_001.txt", "test_data/devis_2024_001.txt", 2, "pending"),  # Marie Martin
-        ("devis_2024_002.txt", "test_data/devis_2024_002.txt", 1, "pending"),  # Jean Dupont
+        ("devis_2024_001.txt", "examples/inventory_agent/test_data/devis_2024_001.txt", 2, "pending"),  # Marie Martin
+        ("devis_2024_002.txt", "examples/inventory_agent/test_data/devis_2024_002.txt", 1, "pending"),  # Jean Dupont
     ]
 
     cursor.executemany(
-        "INSERT OR IGNORE INTO devis_raw (filename, file_path, user_id, status) VALUES (?, ?, ?, ?)",
-        devis_raw_files
+        "INSERT OR IGNORE INTO devis_raw (filename, file_path, user_id, status) VALUES (?, ?, ?, ?)", devis_raw_files
     )
 
     conn.commit()
@@ -183,9 +179,13 @@ def init_database():
 
     print(f"\n📋 Devis structurés:")
     for devis_row in cursor.execute("SELECT id, devis_number, user_id, total_amount, status FROM devis ORDER BY id"):
-        print(f"  - Devis #{devis_row[0]} ({devis_row[1]}): User {devis_row[2]} - {devis_row[3]}€ - Status: {devis_row[4]}")
+        print(
+            f"  - Devis #{devis_row[0]} ({devis_row[1]}): User {devis_row[2]} - {devis_row[3]}€ - Status: {devis_row[4]}"
+        )
         # Display items for this devis
-        for item_row in cursor.execute("SELECT product_name, qty, unit_price, line_total FROM devis_items WHERE devis_id = ?", (devis_row[0],)):
+        for item_row in cursor.execute(
+            "SELECT product_name, qty, unit_price, line_total FROM devis_items WHERE devis_id = ?", (devis_row[0],)
+        ):
             print(f"      • {item_row[0]}: {item_row[1]} x {item_row[2]}€ = {item_row[3]}€")
 
     conn.close()
