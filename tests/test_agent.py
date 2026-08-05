@@ -84,6 +84,24 @@ def make_agent(deep_agent, agent_id="test-agent", config=None, tenant_id=None) -
     return Agent(agent_id, deep_agent, config or {"model": {"name": "claude-x"}}, tenant_id=tenant_id)
 
 
+class FakeTokenTracker:
+    """Enough of TokenUsageTracker's surface for both call sites that touch
+    it: `_log_token_usage` (async log_usage) and `_record_usage_metrics`
+    (synchronous calculate_cost) — one double instead of two ad-hoc ones, no
+    DB/network involved either way."""
+
+    def __init__(self):
+        self.logged_calls: List[Dict[str, Any]] = []
+        self.calculate_cost_calls: List[Any] = []
+
+    async def log_usage(self, **kwargs):
+        self.logged_calls.append(kwargs)
+
+    def calculate_cost(self, model, input_tokens, output_tokens):
+        self.calculate_cost_calls.append((model, input_tokens, output_tokens))
+        return {"input_cost": 0, "output_cost": 0, "total_cost": 0.0042}
+
+
 # --------------------------------------------------------------------------
 # _extract_text (module-level helper)
 # --------------------------------------------------------------------------
@@ -252,6 +270,156 @@ class TestExtractToolCalls:
 
 
 # --------------------------------------------------------------------------
+# _extract_usage — shared by invoke() (_process_agent_response) and
+# stream_invoke(), both need the exact same usage_metadata/response_metadata
+# extraction from the last message of a run.
+# --------------------------------------------------------------------------
+
+
+class FakeUsageMessage:
+    """Bare stand-in exposing only what _extract_usage touches — no content/
+    tool_calls/type needed, unlike FakeAIMessage above."""
+
+    def __init__(self, usage_metadata=None, response_metadata=None):
+        if usage_metadata is not None:
+            self.usage_metadata = usage_metadata
+        if response_metadata is not None:
+            self.response_metadata = response_metadata
+
+
+class TestExtractUsage:
+    def test_prefers_usage_metadata_over_response_metadata(self):
+        agent = make_agent(FakeDeepAgent([]))
+        msg = FakeUsageMessage(
+            usage_metadata={"input_tokens": 10, "output_tokens": 5},
+            response_metadata={"usage": {"input_tokens": 999, "output_tokens": 999}},
+        )
+        assert agent._extract_usage([msg]) == {"input_tokens": 10, "output_tokens": 5}
+
+    def test_falls_back_to_response_metadata_usage(self):
+        agent = make_agent(FakeDeepAgent([]))
+        msg = FakeUsageMessage(response_metadata={"usage": {"input_tokens": 7, "output_tokens": 3}})
+        assert agent._extract_usage([msg]) == {"input_tokens": 7, "output_tokens": 3}
+
+    def test_ignores_falsy_usage_metadata(self):
+        """An empty dict on usage_metadata (falsy) must not shadow a real
+        response_metadata.usage — mirrors the `and last_msg.usage_metadata` guard."""
+        agent = make_agent(FakeDeepAgent([]))
+        msg = FakeUsageMessage(usage_metadata={}, response_metadata={"usage": {"input_tokens": 1, "output_tokens": 1}})
+        assert agent._extract_usage([msg]) == {"input_tokens": 1, "output_tokens": 1}
+
+    def test_response_metadata_without_usage_key_yields_none(self):
+        agent = make_agent(FakeDeepAgent([]))
+        msg = FakeUsageMessage(response_metadata={"other": "stuff"})
+        assert agent._extract_usage([msg]) is None
+
+    def test_response_metadata_not_a_dict_yields_none(self):
+        agent = make_agent(FakeDeepAgent([]))
+        msg = FakeUsageMessage(response_metadata="not-a-dict")
+        assert agent._extract_usage([msg]) is None
+
+    def test_message_without_usage_attributes_yields_none(self):
+        agent = make_agent(FakeDeepAgent([]))
+        assert agent._extract_usage([FakeHumanMessage("hi")]) is None
+
+    def test_empty_messages_falls_back_to_result_usage(self):
+        agent = make_agent(FakeDeepAgent([]))
+        result = {"usage": {"input_tokens": 4, "output_tokens": 2}}
+        assert agent._extract_usage([], result) == {"input_tokens": 4, "output_tokens": 2}
+
+    def test_empty_messages_and_no_result_yields_none(self):
+        agent = make_agent(FakeDeepAgent([]))
+        assert agent._extract_usage([]) is None
+
+    def test_uses_last_message_only(self):
+        agent = make_agent(FakeDeepAgent([]))
+        first = FakeUsageMessage(usage_metadata={"input_tokens": 1, "output_tokens": 1})
+        last = FakeUsageMessage(usage_metadata={"input_tokens": 2, "output_tokens": 2})
+        assert agent._extract_usage([first, last]) == {"input_tokens": 2, "output_tokens": 2}
+
+
+# --------------------------------------------------------------------------
+# _record_usage_metrics — Prometheus token/cost metrics, no-op unless metrics
+# are enabled, a token tracker is configured, and usage was actually found.
+# --------------------------------------------------------------------------
+
+
+class TestRecordUsageMetrics:
+    def test_noop_when_metrics_disabled(self, monkeypatch):
+        monkeypatch.setattr("agent_harness.agent.METRICS_ENABLED", False)
+        recorded = []
+        monkeypatch.setattr("agent_harness.agent.record_token_usage", lambda *a, **k: recorded.append((a, k)))
+
+        tracker = FakeTokenTracker()
+        agent = Agent("bot", FakeDeepAgent([]), {"model": {"name": "claude-x"}}, token_tracker=tracker)
+
+        agent._record_usage_metrics({"input_tokens": 10, "output_tokens": 5})
+
+        assert recorded == []
+        assert tracker.calculate_cost_calls == []
+
+    def test_noop_when_usage_is_none(self, monkeypatch):
+        monkeypatch.setattr("agent_harness.agent.METRICS_ENABLED", True)
+        recorded = []
+        monkeypatch.setattr("agent_harness.agent.record_token_usage", lambda *a, **k: recorded.append((a, k)))
+
+        tracker = FakeTokenTracker()
+        agent = Agent("bot", FakeDeepAgent([]), {"model": {"name": "claude-x"}}, token_tracker=tracker)
+
+        agent._record_usage_metrics(None)
+
+        assert recorded == []
+
+    def test_noop_when_no_token_tracker(self, monkeypatch):
+        monkeypatch.setattr("agent_harness.agent.METRICS_ENABLED", True)
+        recorded = []
+        monkeypatch.setattr("agent_harness.agent.record_token_usage", lambda *a, **k: recorded.append((a, k)))
+
+        agent = Agent("bot", FakeDeepAgent([]), {"model": {"name": "claude-x"}}, token_tracker=None)
+
+        agent._record_usage_metrics({"input_tokens": 10, "output_tokens": 5})
+
+        assert recorded == []
+
+    def test_records_cost_and_tokens_for_anthropic_format(self, monkeypatch):
+        monkeypatch.setattr("agent_harness.agent.METRICS_ENABLED", True)
+        recorded = []
+        monkeypatch.setattr(
+            "agent_harness.agent.record_token_usage",
+            lambda agent_id, tenant_id, model, input_tokens, output_tokens, cost: recorded.append(
+                (agent_id, tenant_id, model, input_tokens, output_tokens, cost)
+            ),
+        )
+
+        tracker = FakeTokenTracker()
+        agent = Agent(
+            "bot", FakeDeepAgent([]), {"model": {"name": "claude-x"}}, tenant_id="t1", token_tracker=tracker
+        )
+
+        agent._record_usage_metrics({"input_tokens": 10, "output_tokens": 5})
+
+        assert tracker.calculate_cost_calls == [("claude-x", 10, 5)]
+        assert recorded == [("bot", "t1", "claude-x", 10, 5, 0.0042)]
+
+    def test_falls_back_to_openai_token_field_names(self, monkeypatch):
+        monkeypatch.setattr("agent_harness.agent.METRICS_ENABLED", True)
+        recorded = []
+        monkeypatch.setattr(
+            "agent_harness.agent.record_token_usage",
+            lambda agent_id, tenant_id, model, input_tokens, output_tokens, cost: recorded.append(
+                (input_tokens, output_tokens)
+            ),
+        )
+
+        tracker = FakeTokenTracker()
+        agent = Agent("bot", FakeDeepAgent([]), {"model": {"name": "gpt-4"}}, token_tracker=tracker)
+
+        agent._record_usage_metrics({"prompt_tokens": 8, "completion_tokens": 4})
+
+        assert recorded == [(8, 4)]
+
+
+# --------------------------------------------------------------------------
 # invoke() — nominal + interrupt flows
 # --------------------------------------------------------------------------
 
@@ -389,6 +557,41 @@ class TestStreamInvoke:
         events = [e async for e in agent.stream_invoke(user_id="u1", message="hi")]
 
         assert events == deep_agent.stream_events
+
+    @pytest.mark.asyncio
+    async def test_logs_token_usage_after_streaming_when_usage_present(self):
+        """Regression: astream_events never surfaces usage itself — before
+        _extract_usage/_record_usage_metrics were wired into stream_invoke, a
+        chat driven purely through SSE never logged anything to token_tracker,
+        unlike invoke()."""
+        final_msg = FakeAIMessage(content=[{"type": "text", "text": "done"}])
+        final_msg.usage_metadata = {"input_tokens": 12, "output_tokens": 6}
+
+        deep_agent = FakeDeepAgent([], state=FakeSnapshot({"messages": [final_msg], "todos": []}))
+        deep_agent.stream_events = [{"event": "on_chat_model_end"}]
+
+        tracker = FakeTokenTracker()
+        agent = Agent("bot", deep_agent, {"model": {"name": "claude-x"}}, token_tracker=tracker)
+
+        async for _ in agent.stream_invoke(user_id="u1", message="hi"):
+            pass
+
+        assert len(tracker.logged_calls) == 1
+        assert tracker.logged_calls[0]["input_tokens"] == 12
+        assert tracker.logged_calls[0]["output_tokens"] == 6
+
+    @pytest.mark.asyncio
+    async def test_does_not_log_when_final_message_has_no_usage(self):
+        deep_agent = FakeDeepAgent([], state=FakeSnapshot({"messages": [FakeAIMessage()], "todos": []}))
+        deep_agent.stream_events = []
+
+        tracker = FakeTokenTracker()
+        agent = Agent("bot", deep_agent, {"model": {"name": "claude-x"}}, token_tracker=tracker)
+
+        async for _ in agent.stream_invoke(user_id="u1", message="hi"):
+            pass
+
+        assert tracker.logged_calls == []
 
 
 # --------------------------------------------------------------------------

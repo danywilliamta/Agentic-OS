@@ -244,6 +244,60 @@ class Agent:
                     calls_by_id[tc_id]["result"] = getattr(msg, "content", None)
         return [calls_by_id[tc_id] for tc_id in order]
 
+    def _extract_usage(self, messages: List, result: Optional[Dict] = None) -> Optional[Dict[str, Any]]:
+        """
+        Extract token usage from the last message of a run.
+
+        Shared by the synchronous path (`_process_agent_response`, via `messages`
+        from the invoke result) and the streaming path (`stream_invoke`, via
+        `messages` read back from the checkpointer) — both need the exact same
+        `usage_metadata` / `response_metadata.usage` extraction. `result` is an
+        optional older-format fallback (`result["usage"]`), only ever available
+        to the synchronous path.
+        """
+        usage = None
+        if messages:
+            last_msg = messages[-1]
+
+            # Try usage_metadata first (standard LangChain format)
+            if hasattr(last_msg, "usage_metadata") and last_msg.usage_metadata:
+                usage = last_msg.usage_metadata
+                logger.debug("Using usage_metadata from last message")
+
+            # Fallback: try response_metadata.usage
+            elif hasattr(last_msg, "response_metadata"):
+                response_meta = last_msg.response_metadata
+                if isinstance(response_meta, dict) and "usage" in response_meta:
+                    usage = response_meta["usage"]
+                    logger.debug("Using response_metadata.usage from last message")
+
+        # Fallback: try result.get("usage") for older format
+        if not usage and result:
+            usage = result.get("usage")
+            if usage:
+                logger.debug("Using usage from result dict")
+
+        return usage
+
+    def _record_usage_metrics(self, usage: Optional[Dict[str, Any]]) -> None:
+        """Record Prometheus token/cost metrics for one run's usage. No-op if
+        metrics, the token tracker, or `usage` itself aren't available."""
+        if not (METRICS_ENABLED and usage and self.token_tracker):
+            return
+        input_tokens = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0)
+        output_tokens = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0)
+        model_name = self.config.get("model", {}).get("name", "unknown")
+
+        costs = self.token_tracker.calculate_cost(model_name, input_tokens, output_tokens)
+        record_token_usage(
+            self.agent_id,
+            self.tenant_id,
+            model_name,
+            input_tokens,
+            output_tokens,
+            float(costs["total_cost"]),
+        )
+
     async def _log_token_usage(self, user_id: str, thread_id: str, usage: Dict[str, Any]):
         """
         Log token usage to the token tracker.
@@ -466,28 +520,7 @@ class Agent:
         )
 
         # Log token usage if tracker is configured
-        # Extract usage from last message (LangChain/DeepAgents format)
-        usage = None
-        if result and "messages" in result and result["messages"]:
-            last_msg = result["messages"][-1]
-
-            # Try usage_metadata first (standard LangChain format)
-            if hasattr(last_msg, "usage_metadata") and last_msg.usage_metadata:
-                usage = last_msg.usage_metadata
-                logger.debug("Using usage_metadata from last message")
-
-            # Fallback: try response_metadata.usage
-            elif hasattr(last_msg, "response_metadata"):
-                response_meta = last_msg.response_metadata
-                if isinstance(response_meta, dict) and "usage" in response_meta:
-                    usage = response_meta["usage"]
-                    logger.debug("Using response_metadata.usage from last message")
-
-        # Fallback: try result.get("usage") for older format
-        if not usage and result:
-            usage = result.get("usage")
-            if usage:
-                logger.debug("Using usage from result dict")
+        usage = self._extract_usage(result.get("messages", []) if result else [], result)
         if self.token_tracker and usage:
             logger.info("✅ Logging token usage to DB...")
             await self._log_token_usage(user_id, thread_id, usage)
@@ -496,27 +529,8 @@ class Agent:
         # Record Prometheus metrics (latency, tokens, cost)
         latency = time.time() - start_time
         if METRICS_ENABLED:
-            # Record invocation metrics
             record_invocation(self.agent_id, self.tenant_id, invocation_status, latency)
-
-            # Record token usage and cost metrics
-            if usage and self.token_tracker:
-                input_tokens = usage.get("input_tokens", 0) or usage.get("prompt_tokens", 0)
-                output_tokens = usage.get("output_tokens", 0) or usage.get("completion_tokens", 0)
-                model_name = self.config.get("model", {}).get("name", "unknown")
-
-                # Calculate cost using the token_tracker instance
-                costs = self.token_tracker.calculate_cost(model_name, input_tokens, output_tokens)
-                total_cost = float(costs["total_cost"])
-
-                record_token_usage(
-                    self.agent_id,
-                    self.tenant_id,
-                    model_name,
-                    input_tokens,
-                    output_tokens,
-                    total_cost
-                )
+        self._record_usage_metrics(usage)
 
         return {
             "agent_id": self.agent_id,
@@ -591,6 +605,15 @@ class Agent:
         todos = snapshot.values.get("todos")
         if todos:
             logger.info(self._format_todos(todos))
+
+        # Log token usage — same extraction/recording as _process_agent_response
+        # (ainvoke), missing here until now: astream_events never surfaces usage
+        # itself, so a chat driven purely through SSE never logged anything to
+        # token_tracker, unlike invoke().
+        usage = self._extract_usage(messages)
+        if self.token_tracker and usage:
+            await self._log_token_usage(user_id, thread_id, usage)
+        self._record_usage_metrics(usage)
 
     async def get_history(self, user_id: str) -> List[Dict[str, str]]:
         """
