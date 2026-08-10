@@ -2,6 +2,7 @@
 Agent Factory - Creates agents dynamically from YAML configuration.
 """
 
+import asyncio
 import os
 import yaml
 import sqlite3
@@ -64,6 +65,13 @@ class AgentFactory:
         # close_agent()/aclose().
         self._checkpointer_contexts: Dict[str, Any] = {}
         self._token_tracker = None
+        # Guards the check-then-set below on self._token_tracker: two
+        # concurrent create_from_dict calls (e.g. two different tenants'
+        # very first agent build racing right after startup) could otherwise
+        # both see it unset, both build their own TokenUsageTracker/pool, and
+        # the loser's pool would be silently orphaned when the winner's
+        # assignment overwrites it.
+        self._token_tracker_lock = asyncio.Lock()
 
         # Auto-configure from DATABASE_URL if not explicitly provided
         if token_tracker_config is None and os.getenv("DATABASE_URL"):
@@ -189,9 +197,11 @@ class AgentFactory:
             middleware=tuple(middleware_list),
         )
 
-        # Configure token tracker (if enabled)
+        # Configure token tracker (if enabled) — see _token_tracker_lock above.
         if not self._token_tracker:
-            self._token_tracker = await self._configure_token_tracker()
+            async with self._token_tracker_lock:
+                if not self._token_tracker:  # re-check: another call may have won the race
+                    self._token_tracker = await self._configure_token_tracker()
 
         # Wrap in Agent class
         agent = Agent(agent_id, deep_agent, config, tenant_id=tenant_id, token_tracker=self._token_tracker)

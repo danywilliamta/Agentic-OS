@@ -1,5 +1,6 @@
 """Unit tests for agent_harness.agent_factory.AgentFactory."""
 
+import asyncio
 import sys
 
 import pytest
@@ -372,6 +373,34 @@ class TestCreateFromDict:
         await factory.create_from_dict(config, tenant_id="tenant-1")
 
         assert factory._checkpointer_contexts == {}
+
+    @pytest.mark.asyncio
+    async def test_concurrent_calls_configure_the_token_tracker_only_once(self, factory, monkeypatch):
+        """Regression test: the token tracker is a factory-wide singleton
+        lazily built on first use (`if not self._token_tracker: ...`) with
+        no lock — two concurrent create_from_dict calls (e.g. two different
+        tenants' very first agent build racing right after startup) used to
+        each see it unset, each build their own TokenUsageTracker/pool, and
+        the loser's pool was silently orphaned when the winner's assignment
+        overwrote self._token_tracker — surfacing later as an unexplained
+        "Task was destroyed but it is pending!" psycopg_pool warning."""
+        monkeypatch.setattr(agent_factory_module, "create_deep_agent", lambda **kwargs: object())
+        calls = []
+
+        async def slow_configure_token_tracker():
+            await asyncio.sleep(0.05)  # widen the race window
+            calls.append(1)
+            return object()  # sentinel tracker
+
+        monkeypatch.setattr(factory, "_configure_token_tracker", slow_configure_token_tracker)
+        config = {"agent_id": "support-bot", "checkpointer": {"type": "memory"}}
+
+        await asyncio.gather(
+            factory.create_from_dict(dict(config), tenant_id="tenant-a"),
+            factory.create_from_dict(dict(config), tenant_id="tenant-b"),
+        )
+
+        assert len(calls) == 1
 
 
 # --------------------------------------------------------------------------

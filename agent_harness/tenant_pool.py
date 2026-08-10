@@ -25,6 +25,7 @@ API (`create_from_dict(config, middleware=, tenant_id=)`, `Agent.make_key`,
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections import OrderedDict
 from pathlib import Path
@@ -124,6 +125,11 @@ class TenantAgentPool:
         # (its whole agent family evicted together), not one agent instance.
         self._tenant_order: "OrderedDict[str, None]" = OrderedDict()
         self._templates: Dict[str, dict] = {}
+        # One lock per tenant (not a single global lock) so two concurrent
+        # get_agent() calls for the *same* not-yet-cached tenant serialize on
+        # building that tenant's family, while unrelated tenants still build
+        # fully in parallel — see get_agent() for why this exists.
+        self._build_locks: Dict[str, asyncio.Lock] = {}
 
     def _load_template(self, agent_type: str) -> dict:
         if agent_type not in self._templates:
@@ -197,6 +203,7 @@ class TenantAgentPool:
                 # connections behind it, which grew unbounded as tenants
                 # cycled through the cache regardless of max_cached_tenants.
                 await agent_factory.close_agent(Agent.make_key(agent_type, oldest_tenant))
+            self._build_locks.pop(oldest_tenant, None)
             logger.info("TenantAgentPool: evicted tenant %s (LRU)", oldest_tenant)
 
     async def _build_tenant_family(self, tenant_id: str) -> Dict[str, Agent]:
@@ -218,6 +225,15 @@ class TenantAgentPool:
         family together: delegation resolves its targets by looking them up
         in `agent_factory.agents_cache`, so siblings must already exist there
         by the time any one of them is first invoked.
+
+        Guarded by a per-tenant lock: without it, two concurrent calls for
+        the same not-yet-cached tenant (e.g. two requests landing right after
+        a cold start) would each see a cache miss and independently build —
+        and cache-write — the whole family, silently orphaning the loser's
+        Postgres checkpointer pools (never closed, since nothing references
+        them anymore once the winner's write overwrites the cache entry) —
+        surfacing later as a "Task was destroyed but it is pending!"
+        psycopg_pool warning with no build-time link back to its cause.
         """
         if agent_type not in self._agent_types:
             raise ValueError(f"Unknown agent_type: {agent_type!r} (expected one of {self._agent_types})")
@@ -228,5 +244,17 @@ class TenantAgentPool:
             self._tenant_order.move_to_end(tenant_id)
             return cached
 
-        family = await self._build_tenant_family(tenant_id)
-        return family[agent_type]
+        # dict.setdefault() has no `await` inside it, so on the single event
+        # loop this app runs on, nothing can interleave between checking and
+        # inserting the lock — no separate "lock for creating locks" needed.
+        lock = self._build_locks.setdefault(tenant_id, asyncio.Lock())
+        async with lock:
+            # Re-check: another call may have finished building this tenant's
+            # family while we were waiting for the lock.
+            cached = agent_factory.get_agent(key)
+            if cached is not None:
+                self._tenant_order.move_to_end(tenant_id)
+                return cached
+
+            family = await self._build_tenant_family(tenant_id)
+            return family[agent_type]

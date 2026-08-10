@@ -1,5 +1,7 @@
 """Unit tests for agent_harness.tenant_pool.TenantAgentPool."""
 
+import asyncio
+
 import pytest
 import yaml
 
@@ -286,3 +288,69 @@ class TestGetAgent:
 
         assert sorted(closed) == sorted(t1_keys)
         assert agent_factory._checkpointer_contexts == {}
+
+    @pytest.mark.asyncio
+    async def test_lru_eviction_drops_the_evicted_tenants_build_lock(self, configs_dir, monkeypatch):
+        install_fake_create_from_dict(monkeypatch)
+        small_pool = TenantAgentPool(
+            configs_dir=configs_dir,
+            agent_types=["support", "billing", "inventory"],
+            context_provider=fake_context_provider,
+            max_cached_tenants=1,
+        )
+
+        await small_pool.get_agent("t1", "support")
+        assert "t1" in small_pool._build_locks
+
+        await small_pool.get_agent("t2", "support")  # exceeds capacity -> evicts t1's family
+
+        assert "t1" not in small_pool._build_locks
+
+    @pytest.mark.asyncio
+    async def test_concurrent_get_agent_for_same_tenant_builds_the_family_only_once(self, pool, monkeypatch):
+        """Regression test: get_agent used to check-then-build with no lock —
+        two concurrent calls for the same not-yet-cached tenant would each
+        independently build (and cache-write) the whole family, and the
+        loser's Postgres pools were silently orphaned when the winner's
+        write overwrote them — surfacing later as an unexplained "Task was
+        destroyed but it is pending!" psycopg_pool warning."""
+        calls = []
+
+        async def slow_fake_create_from_dict(config, middleware=None, tenant_id=None):
+            # Widens the race window: without the lock, both concurrent
+            # get_agent() calls would be past the initial cache-miss check
+            # and racing to build before either finishes.
+            await asyncio.sleep(0.05)
+            agent = FakeAgent(config["agent_id"], tenant_id)
+            agent_factory.agents_cache[agent.instance_key] = agent
+            calls.append(agent.instance_key)
+            return agent
+
+        monkeypatch.setattr(agent_factory, "create_from_dict", slow_fake_create_from_dict)
+
+        agent_a, agent_b = await asyncio.gather(
+            pool.get_agent("t1", "support"),
+            pool.get_agent("t1", "support"),
+        )
+
+        assert agent_a is agent_b
+        # Exactly one family build (3 agent_types), not two.
+        assert sorted(calls) == sorted(Agent.make_key(t, "t1") for t in ("support", "billing", "inventory"))
+
+    @pytest.mark.asyncio
+    async def test_concurrent_get_agent_for_different_tenants_builds_in_parallel(self, pool, monkeypatch):
+        """The per-tenant lock must not become a de-facto global lock —
+        unrelated tenants building for the first time at the same time
+        should not wait on each other."""
+        install_fake_create_from_dict(monkeypatch)
+
+        start = asyncio.get_event_loop().time()
+        await asyncio.gather(
+            pool.get_agent("t1", "support"),
+            pool.get_agent("t2", "support"),
+        )
+        elapsed = asyncio.get_event_loop().time() - start
+
+        assert agent_factory.get_agent(Agent.make_key("support", "t1")) is not None
+        assert agent_factory.get_agent(Agent.make_key("support", "t2")) is not None
+        assert elapsed < 0.5  # generous — just proving no serialization stall
