@@ -615,6 +615,22 @@ class Agent:
             await self._log_token_usage(user_id, thread_id, usage)
         self._record_usage_metrics(usage)
 
+    async def get_raw_messages(self, user_id: str) -> List:
+        """
+        Return this thread's full raw LangChain message list (HumanMessage/AIMessage/
+        ToolMessage, unprocessed), read from the checkpointer's current state.
+
+        For callers that need more than get_history()'s stripped `{role, content}`
+        turns — e.g. an app that wants to correlate a turn's tool_calls/results
+        (its own tools, unknown to this generic package) back to the right
+        conversational turn for UI reconstruction after a page reload, the same way
+        a live tool-call stream already does.
+        """
+        thread_id = f"{self.instance_key}-{user_id}"
+        config = {"configurable": {"thread_id": thread_id}}
+        snapshot = await self._deep_agent.aget_state(config)
+        return snapshot.values.get("messages", [])
+
     async def get_history(self, user_id: str) -> List[Dict[str, str]]:
         """
         Return this thread's conversation as simple `{role, content}` turns, for display.
@@ -628,12 +644,8 @@ class Agent:
         only contains tool calls with no text) are omitted — they're implementation
         detail, not a conversational turn a user should see.
         """
-        thread_id = f"{self.instance_key}-{user_id}"
-        config = {"configurable": {"thread_id": thread_id}}
-        snapshot = await self._deep_agent.aget_state(config)
-
         turns: List[Dict[str, str]] = []
-        for msg in snapshot.values.get("messages", []):
+        for msg in await self.get_raw_messages(user_id):
             msg_type = getattr(msg, "type", None)
             if msg_type not in ("human", "ai"):
                 continue

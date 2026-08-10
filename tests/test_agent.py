@@ -595,6 +595,36 @@ class TestStreamInvoke:
 
 
 # --------------------------------------------------------------------------
+# get_raw_messages()
+# --------------------------------------------------------------------------
+
+
+class TestGetRawMessages:
+    @pytest.mark.asyncio
+    async def test_returns_the_full_unprocessed_message_list(self):
+        messages = [
+            FakeHumanMessage("hi there"),
+            FakeAIMessage(content=[], tool_calls=[{"id": "1", "name": "write_todos", "args": {}}]),
+            FakeToolMessage(content="ok", tool_call_id="1"),
+            FakeAIMessage(content=[{"type": "text", "text": "done"}]),
+        ]
+        deep_agent = FakeDeepAgent([], state=FakeSnapshot({"messages": messages}))
+        agent = make_agent(deep_agent)
+
+        raw = await agent.get_raw_messages(user_id="u1")
+
+        # Unlike get_history(), nothing is filtered or stripped — same objects, same order.
+        assert raw == messages
+
+    @pytest.mark.asyncio
+    async def test_no_messages_key_returns_empty_list(self):
+        deep_agent = FakeDeepAgent([], state=FakeSnapshot({}))
+        agent = make_agent(deep_agent)
+
+        assert await agent.get_raw_messages(user_id="u1") == []
+
+
+# --------------------------------------------------------------------------
 # get_history()
 # --------------------------------------------------------------------------
 
