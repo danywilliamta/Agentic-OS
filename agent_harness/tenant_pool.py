@@ -187,11 +187,16 @@ class TenantAgentPool:
         ]
         return await agent_factory.create_from_dict(config, middleware=middleware, tenant_id=tenant_id)
 
-    def _evict_if_needed(self) -> None:
+    async def _evict_if_needed(self) -> None:
         while len(self._tenant_order) > self._max_cached_tenants:
             oldest_tenant, _ = self._tenant_order.popitem(last=False)
             for agent_type in self._agent_types:
-                agent_factory.agents_cache.pop(Agent.make_key(agent_type, oldest_tenant), None)
+                # close_agent (not a plain cache pop) also releases that
+                # agent's Postgres checkpointer pool — without it, LRU
+                # eviction bounded agents_cache but not the Postgres
+                # connections behind it, which grew unbounded as tenants
+                # cycled through the cache regardless of max_cached_tenants.
+                await agent_factory.close_agent(Agent.make_key(agent_type, oldest_tenant))
             logger.info("TenantAgentPool: evicted tenant %s (LRU)", oldest_tenant)
 
     async def _build_tenant_family(self, tenant_id: str) -> Dict[str, Agent]:
@@ -203,7 +208,7 @@ class TenantAgentPool:
 
         self._tenant_order[tenant_id] = None
         self._tenant_order.move_to_end(tenant_id)
-        self._evict_if_needed()
+        await self._evict_if_needed()
         return family
 
     async def get_agent(self, tenant_id: str, agent_type: str) -> Agent:

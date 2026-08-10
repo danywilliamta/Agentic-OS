@@ -59,7 +59,10 @@ class AgentFactory:
             agent = await agent_factory.create_from_file("agent.yml")
         """
         self.agents_cache: Dict[str, Agent] = {}
-        self._checkpointer_contexts: List = []  # Keep context managers alive
+        # Keyed by Agent.instance_key so a single (agent_id, tenant_id) pair's
+        # checkpointer pool can be closed individually on eviction — see
+        # close_agent()/aclose().
+        self._checkpointer_contexts: Dict[str, Any] = {}
         self._token_tracker = None
 
         # Auto-configure from DATABASE_URL if not explicitly provided
@@ -142,7 +145,7 @@ class AgentFactory:
 
         # Configure checkpointer
         logger.debug("Configuring checkpointer...")
-        checkpointer = await self._configure_checkpointer(config.get("checkpointer", {}))
+        checkpointer, checkpointer_ctx_mgr = await self._configure_checkpointer(config.get("checkpointer", {}))
         checkpointer_type = config.get("checkpointer", {}).get("type", "none")
         logger.info("Checkpointer configured: %s", checkpointer_type)
 
@@ -197,6 +200,8 @@ class AgentFactory:
         # so create_from_dict can be called again for the same agent_id under a
         # different tenant_id without evicting the first tenant's instance.
         self.agents_cache[agent.instance_key] = agent
+        if checkpointer_ctx_mgr is not None:
+            self._checkpointer_contexts[agent.instance_key] = checkpointer_ctx_mgr
 
         logger.info("Agent '%s' created successfully", agent.instance_key)
         return agent
@@ -248,10 +253,17 @@ class AgentFactory:
             return StateBackend()
 
     async def _configure_checkpointer(self, checkpointer_config: Dict):
-        """Configure checkpointer from config."""
+        """Configure checkpointer from config.
+
+        Returns (checkpointer, ctx_mgr) — ctx_mgr is the still-open async
+        context manager backing a Postgres checkpointer (None otherwise), so
+        the caller can key it under the owning agent's instance_key and close
+        it later via close_agent()/aclose(), instead of it being kept alive
+        forever with no way to release it individually (see close_agent()).
+        """
         # Check if checkpointer is disabled
         if not checkpointer_config.get("enabled", True):
-            return None
+            return None, None
 
         cp_type = checkpointer_config.get("type", "postgres")
 
@@ -263,20 +275,18 @@ class AgentFactory:
             ctx_mgr = AsyncPostgresSaver.from_conn_string(conn_str)
             checkpointer = await ctx_mgr.__aenter__()
             await checkpointer.setup()
-            # Store context manager to keep connection alive
-            self._checkpointer_contexts.append((ctx_mgr, checkpointer))
-            return checkpointer
+            return checkpointer, ctx_mgr
 
         elif cp_type == "sqlite":
             # Note: AsyncSqliteSaver requires complex setup with context managers
             # For simple testing, use memory saver instead
             # TODO: Implement proper AsyncSqliteSaver with connection management
-            return MemorySaver()
+            return MemorySaver(), None
 
         elif cp_type == "memory":
-            return MemorySaver()
+            return MemorySaver(), None
 
-        return None
+        return None, None
 
     def _configure_store(self, store_config: Dict):
         """Configure store from config."""
@@ -406,6 +416,44 @@ class AgentFactory:
     def list_agents(self) -> List[str]:
         """List all cached agent IDs."""
         return list(self.agents_cache.keys())
+
+    async def close_agent(self, agent_id: str) -> None:
+        """Evict one cached agent and release its Postgres checkpointer pool.
+
+        Dropping an agent from `agents_cache` alone (e.g. plain dict.pop, as
+        `TenantAgentPool`'s LRU eviction used to do) leaves its
+        `AsyncPostgresSaver` context manager — and the connection pool behind
+        it — referenced forever in `_checkpointer_contexts` with no way to
+        release it. `TokenUsageTracker`'s pool is a separate, factory-wide
+        singleton (see `_configure_token_tracker`) and is intentionally left
+        alone here — closing it would break every other still-cached agent
+        sharing it; only `aclose()` (whole-process shutdown) may close it.
+        """
+        self.agents_cache.pop(agent_id, None)
+        ctx_mgr = self._checkpointer_contexts.pop(agent_id, None)
+        if ctx_mgr is not None:
+            await ctx_mgr.__aexit__(None, None, None)
+
+    async def aclose(self) -> None:
+        """Release every pooled Postgres connection this factory opened.
+
+        Nothing calls this automatically — `agents_cache`/`_token_tracker`/
+        `_checkpointer_contexts` are all designed to live for the whole
+        process. Call this once, from the host app's shutdown/lifespan
+        teardown, so a graceful stop (or a dev `uvicorn --reload` restart)
+        closes these pools instead of the event loop tearing them down mid
+        `await`, which otherwise raises "Task was destroyed but it is
+        pending!" (psycopg_pool's background workers) with nothing wrong
+        actually broken — it's just cleanup that never ran.
+        """
+        for ctx_mgr in list(self._checkpointer_contexts.values()):
+            await ctx_mgr.__aexit__(None, None, None)
+        self._checkpointer_contexts.clear()
+        self.agents_cache.clear()
+
+        if self._token_tracker is not None:
+            await self._token_tracker.close()
+            self._token_tracker = None
 
     def configure_token_tracker(self, token_tracker_config: Dict):
         """

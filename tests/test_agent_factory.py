@@ -128,22 +128,33 @@ class TestConfigureBackend:
 
 
 class TestConfigureCheckpointer:
+    """`_configure_checkpointer` returns `(checkpointer, ctx_mgr)` — ctx_mgr is
+    the still-open Postgres context manager (None for memory/sqlite/disabled),
+    which the caller (`create_from_dict`) is responsible for keeping alive
+    under the agent's instance_key so it can later be closed individually via
+    `close_agent()`/`aclose()` (see TestCloseAgent/TestAClose below) instead
+    of leaking forever."""
+
     @pytest.mark.asyncio
     async def test_disabled_returns_none(self, factory):
-        assert await factory._configure_checkpointer({"enabled": False}) is None
+        assert await factory._configure_checkpointer({"enabled": False}) == (None, None)
 
     @pytest.mark.asyncio
     async def test_memory_type_returns_memory_saver(self, factory):
-        assert isinstance(await factory._configure_checkpointer({"type": "memory"}), MemorySaver)
+        checkpointer, ctx_mgr = await factory._configure_checkpointer({"type": "memory"})
+        assert isinstance(checkpointer, MemorySaver)
+        assert ctx_mgr is None
 
     @pytest.mark.asyncio
     async def test_sqlite_type_currently_falls_back_to_memory_saver(self, factory):
         # Documented TODO in source: AsyncSqliteSaver isn't wired up yet.
-        assert isinstance(await factory._configure_checkpointer({"type": "sqlite"}), MemorySaver)
+        checkpointer, ctx_mgr = await factory._configure_checkpointer({"type": "sqlite"})
+        assert isinstance(checkpointer, MemorySaver)
+        assert ctx_mgr is None
 
     @pytest.mark.asyncio
     async def test_unknown_type_returns_none(self, factory):
-        assert await factory._configure_checkpointer({"type": "bogus"}) is None
+        assert await factory._configure_checkpointer({"type": "bogus"}) == (None, None)
 
     @pytest.mark.asyncio
     async def test_postgres_type_enters_context_and_calls_setup(self, factory, monkeypatch):
@@ -154,13 +165,13 @@ class TestConfigureCheckpointer:
             lambda conn_str: FakePostgresCtxMgr(checkpointer),
         )
 
-        result = await factory._configure_checkpointer(
+        result_checkpointer, ctx_mgr = await factory._configure_checkpointer(
             {"type": "postgres", "connection_string": "postgresql://x"}
         )
 
-        assert result is checkpointer
+        assert result_checkpointer is checkpointer
         assert checkpointer.setup_called is True
-        assert factory._checkpointer_contexts  # kept alive for the factory's lifetime
+        assert ctx_mgr is not None
 
     @pytest.mark.asyncio
     async def test_default_type_when_omitted_is_postgres(self, factory, monkeypatch):
@@ -173,9 +184,9 @@ class TestConfigureCheckpointer:
             lambda conn_str: FakePostgresCtxMgr(checkpointer),
         )
 
-        result = await factory._configure_checkpointer({})
+        result_checkpointer, _ = await factory._configure_checkpointer({})
 
-        assert result is checkpointer
+        assert result_checkpointer is checkpointer
 
 
 # --------------------------------------------------------------------------
@@ -334,3 +345,131 @@ class TestCreateFromDict:
         await factory.create_from_dict(config, middleware=sentinel_middleware)
 
         assert captured["middleware"] == sentinel_middleware
+
+    @pytest.mark.asyncio
+    async def test_postgres_checkpointer_context_is_tracked_under_instance_key(self, factory, monkeypatch):
+        monkeypatch.setattr(agent_factory_module, "create_deep_agent", lambda **kwargs: object())
+        checkpointer = FakePostgresCheckpointer()
+        monkeypatch.setattr(
+            agent_factory_module.AsyncPostgresSaver,
+            "from_conn_string",
+            lambda conn_str: FakePostgresCtxMgr(checkpointer),
+        )
+        config = {
+            "agent_id": "support-bot",
+            "checkpointer": {"type": "postgres", "connection_string": "postgresql://x"},
+        }
+
+        await factory.create_from_dict(config, tenant_id="tenant-1")
+
+        assert "support-bot:tenant-1" in factory._checkpointer_contexts
+
+    @pytest.mark.asyncio
+    async def test_non_postgres_checkpointer_is_not_tracked_for_closing(self, factory, monkeypatch):
+        monkeypatch.setattr(agent_factory_module, "create_deep_agent", lambda **kwargs: object())
+        config = {"agent_id": "support-bot", "checkpointer": {"type": "memory"}}
+
+        await factory.create_from_dict(config, tenant_id="tenant-1")
+
+        assert factory._checkpointer_contexts == {}
+
+
+# --------------------------------------------------------------------------
+# close_agent / aclose — release Postgres pools instead of leaking them
+# --------------------------------------------------------------------------
+
+
+class FakeClosingCtxMgr:
+    def __init__(self, name, closed_log):
+        self.name = name
+        self._closed_log = closed_log
+
+    async def __aexit__(self, *exc):
+        self._closed_log.append(self.name)
+        return False
+
+
+class TestCloseAgent:
+    @pytest.mark.asyncio
+    async def test_evicts_from_cache_and_closes_its_checkpointer_pool(self, factory):
+        closed = []
+        factory.agents_cache["bot:tenant"] = object()
+        factory._checkpointer_contexts["bot:tenant"] = FakeClosingCtxMgr("bot:tenant", closed)
+
+        await factory.close_agent("bot:tenant")
+
+        assert "bot:tenant" not in factory.agents_cache
+        assert "bot:tenant" not in factory._checkpointer_contexts
+        assert closed == ["bot:tenant"]
+
+    @pytest.mark.asyncio
+    async def test_missing_key_is_a_noop(self, factory):
+        await factory.close_agent("does-not-exist")  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_agent_without_a_postgres_checkpointer_is_just_uncached(self, factory):
+        factory.agents_cache["bot:tenant"] = object()  # no matching _checkpointer_contexts entry
+
+        await factory.close_agent("bot:tenant")
+
+        assert "bot:tenant" not in factory.agents_cache
+
+    @pytest.mark.asyncio
+    async def test_closing_one_agent_does_not_touch_the_shared_token_tracker(self, factory):
+        class FakeTracker:
+            def __init__(self):
+                self.closed = False
+
+            async def close(self):
+                self.closed = True
+
+        tracker = FakeTracker()
+        factory._token_tracker = tracker
+        factory.agents_cache["bot:tenant"] = object()
+
+        await factory.close_agent("bot:tenant")
+
+        # The token tracker's pool is a factory-wide singleton shared by every
+        # still-cached agent — closing it on a single agent's eviction would
+        # break every sibling still relying on it. Only aclose() may close it.
+        assert tracker.closed is False
+
+
+class TestAClose:
+    @pytest.mark.asyncio
+    async def test_closes_every_remaining_checkpointer_pool_and_clears_caches(self, factory):
+        closed = []
+        factory.agents_cache["a:t1"] = object()
+        factory.agents_cache["b:t1"] = object()
+        factory._checkpointer_contexts["a:t1"] = FakeClosingCtxMgr("a:t1", closed)
+        factory._checkpointer_contexts["b:t1"] = FakeClosingCtxMgr("b:t1", closed)
+
+        await factory.aclose()
+
+        assert sorted(closed) == ["a:t1", "b:t1"]
+        assert factory.agents_cache == {}
+        assert factory._checkpointer_contexts == {}
+
+    @pytest.mark.asyncio
+    async def test_closes_the_shared_token_tracker_exactly_once(self, factory):
+        class FakeTracker:
+            def __init__(self):
+                self.close_calls = 0
+
+            async def close(self):
+                self.close_calls += 1
+
+        tracker = FakeTracker()
+        factory._token_tracker = tracker
+
+        await factory.aclose()
+
+        assert tracker.close_calls == 1
+        assert factory._token_tracker is None
+
+    @pytest.mark.asyncio
+    async def test_is_a_noop_when_nothing_was_ever_configured(self, factory):
+        await factory.aclose()  # must not raise
+
+        assert factory.agents_cache == {}
+        assert factory._checkpointer_contexts == {}

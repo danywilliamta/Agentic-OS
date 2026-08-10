@@ -40,8 +40,10 @@ INVENTORY_TEMPLATE = {
 def clean_agents_cache():
     """`agent_factory` is a process-wide singleton — tests must not leak cache entries."""
     agent_factory.agents_cache.clear()
+    agent_factory._checkpointer_contexts.clear()
     yield
     agent_factory.agents_cache.clear()
+    agent_factory._checkpointer_contexts.clear()
 
 
 @pytest.fixture
@@ -249,3 +251,38 @@ class TestGetAgent:
         assert agent_factory.get_agent(Agent.make_key("support", "t1")) is None
         assert agent_factory.get_agent(Agent.make_key("billing", "t1")) is None
         assert agent_factory.get_agent(Agent.make_key("support", "t2")) is not None
+
+    @pytest.mark.asyncio
+    async def test_lru_eviction_closes_evicted_tenants_checkpointer_pools(self, configs_dir, monkeypatch):
+        """Regression test: LRU eviction used to only pop `agents_cache` — the
+        evicted tenant's Postgres checkpointer pool (`AsyncPostgresSaver`,
+        kept in `agent_factory._checkpointer_contexts`) was never closed, so
+        `max_cached_tenants` bounded memory but not Postgres connections,
+        which grew unbounded as tenants cycled through the cache."""
+        install_fake_create_from_dict(monkeypatch)
+        closed = []
+
+        class FakeCtxMgr:
+            def __init__(self, key):
+                self.key = key
+
+            async def __aexit__(self, *exc):
+                closed.append(self.key)
+                return False
+
+        small_pool = TenantAgentPool(
+            configs_dir=configs_dir,
+            agent_types=["support", "billing", "inventory"],
+            context_provider=fake_context_provider,
+            max_cached_tenants=1,
+        )
+
+        await small_pool.get_agent("t1", "support")
+        t1_keys = [Agent.make_key(t, "t1") for t in ("support", "billing", "inventory")]
+        for key in t1_keys:
+            agent_factory._checkpointer_contexts[key] = FakeCtxMgr(key)
+
+        await small_pool.get_agent("t2", "support")  # exceeds capacity -> evicts t1's family
+
+        assert sorted(closed) == sorted(t1_keys)
+        assert agent_factory._checkpointer_contexts == {}

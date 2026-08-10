@@ -2,6 +2,7 @@
 Web Search Tool - Search the web using Tavily AI via LangChain.
 """
 
+import asyncio
 import os
 from typing import Dict, Any
 from agent_harness.tool_registry import tool_registry
@@ -43,8 +44,11 @@ async def web_search(query: str, max_results: int = 5, search_depth: str = "basi
         # Initialize Tavily search tool
         search_tool = TavilySearch(max_results=max_results, search_depth=search_depth, api_key=api_key)
 
-        # Perform search (LangChain tools are sync, so we call directly)
-        raw_results = search_tool.invoke({"query": query})
+        # LangChain's TavilySearch.invoke() is a synchronous, network-blocking
+        # call — running it directly inside this async def would block the
+        # whole event loop (every other in-flight request/agent, not just this
+        # one) for the duration of the HTTP round-trip. Offload to a thread.
+        raw_results = await asyncio.to_thread(search_tool.invoke, {"query": query})
 
         # Format results to consistent format
         # TavilySearch returns a dict with 'results' key
