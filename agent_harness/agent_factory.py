@@ -197,14 +197,10 @@ class AgentFactory:
             middleware=tuple(middleware_list),
         )
 
-        # Configure token tracker (if enabled) — see _token_tracker_lock above.
-        if not self._token_tracker:
-            async with self._token_tracker_lock:
-                if not self._token_tracker:  # re-check: another call may have won the race
-                    self._token_tracker = await self._configure_token_tracker()
+        token_tracker = await self.get_token_tracker()
 
         # Wrap in Agent class
-        agent = Agent(agent_id, deep_agent, config, tenant_id=tenant_id, token_tracker=self._token_tracker)
+        agent = Agent(agent_id, deep_agent, config, tenant_id=tenant_id, token_tracker=token_tracker)
 
         # Cache agent — keyed by the composite (agent_id, tenant_id) identity,
         # so create_from_dict can be called again for the same agent_id under a
@@ -418,6 +414,21 @@ class AgentFactory:
             os.environ["LANGSMITH_ENDPOINT"] = "https://api.smith.langchain.com"
 
         logger.info("✅ LangSmith tracing enabled: project=%s", project)
+
+    async def get_token_tracker(self) -> Optional["TokenUsageTracker"]:
+        """Return the configured TokenUsageTracker, building it (and its
+        connection pool) on first call if it hasn't been built yet — the same
+        lazy double-checked-locking `create_from_dict` uses, exposed so
+        callers outside the agent-build path (e.g. a usage-reporting API
+        route) can reach the tracker without poking at the private
+        `_token_tracker` attribute. Returns None if token tracking is
+        disabled or has no connection string configured.
+        """
+        if not self._token_tracker:
+            async with self._token_tracker_lock:
+                if not self._token_tracker:  # re-check: another call may have won the race
+                    self._token_tracker = await self._configure_token_tracker()
+        return self._token_tracker
 
     def get_agent(self, agent_id: str) -> Agent:
         """Get cached agent by ID (the composite `Agent.make_key(agent_id, tenant_id)` for tenant-scoped agents)."""
