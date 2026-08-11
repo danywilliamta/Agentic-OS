@@ -29,6 +29,29 @@ class TokenUsageTracker:
     # Pricing as of August 2026 (USD per 1K tokens)
     # Source: https://www.anthropic.com/pricing
     PRICING = {
+        "claude-opus-5": {
+            "input": Decimal("0.005"),
+            "output": Decimal("0.025"),
+        },
+        "claude-opus-4-8": {
+            "input": Decimal("0.005"),
+            "output": Decimal("0.025"),
+        },
+        "claude-opus-4-7": {
+            "input": Decimal("0.005"),
+            "output": Decimal("0.025"),
+        },
+        "claude-opus-4-6": {
+            "input": Decimal("0.005"),   # $0.005 per 1K input tokens
+            "output": Decimal("0.025"),  # $0.025 per 1K output tokens
+        },
+        "claude-sonnet-5": {
+            # Standard rate — Anthropic runs an intro rate ($0.002/$0.010) through
+            # 2026-08-31, deliberately not modeled here (no time-conditional
+            # pricing in this table); slightly overstates cost until that date.
+            "input": Decimal("0.003"),
+            "output": Decimal("0.015"),
+        },
         "claude-sonnet-4-6": {
             "input": Decimal("0.003"),   # $0.003 per 1K input tokens
             "output": Decimal("0.015"),  # $0.015 per 1K output tokens
@@ -42,8 +65,8 @@ class TokenUsageTracker:
             "output": Decimal("0.075"),  # $0.075 per 1K output tokens
         },
         "claude-haiku-4-5": {
-            "input": Decimal("0.0008"),  # $0.0008 per 1K input tokens
-            "output": Decimal("0.004"),  # $0.004 per 1K output tokens
+            "input": Decimal("0.001"),   # $0.001 per 1K input tokens
+            "output": Decimal("0.005"),  # $0.005 per 1K output tokens
         },
         # Fallback for unknown models (use Sonnet pricing)
         "default": {
