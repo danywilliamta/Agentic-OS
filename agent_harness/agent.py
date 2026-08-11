@@ -387,7 +387,15 @@ class Agent:
         # Get recursion limit from config (default: 25)
         recursion_limit = self.config.get("recursion_limit", 25)
 
-        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": recursion_limit}
+        # tenant_id/user_id exposed via `configurable` so a tool function can
+        # declare a `config: RunnableConfig` parameter (auto-injected by
+        # LangChain's tool conversion, never shown to the model) and read the
+        # framework-verified identity of the caller — instead of trusting a
+        # tenant/user id the model itself echoes back as a tool argument.
+        config = {
+            "configurable": {"thread_id": thread_id, "user_id": user_id, "tenant_id": self.tenant_id},
+            "recursion_limit": recursion_limit,
+        }
 
         if message:
             logger.info("User message: %s", message)
@@ -580,7 +588,13 @@ class Agent:
         # Get recursion limit from config (default: 25)
         recursion_limit = self.config.get("recursion_limit", 25)
 
-        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": recursion_limit}
+        # See the matching comment in `_process_agent_response` — same
+        # configurable identity, exposed here too since streamed turns go
+        # through this method instead.
+        config = {
+            "configurable": {"thread_id": thread_id, "user_id": user_id, "tenant_id": self.tenant_id},
+            "recursion_limit": recursion_limit,
+        }
 
         message_dict = {"role": "user", "content": message}
         if context:
