@@ -97,6 +97,18 @@ class TokenUsageTracker:
             "input": Decimal("0.00025"),  # $0.25 per 1M input tokens (text/image/video)
             "output": Decimal("0.03"),    # $30.00 per 1M output tokens (image)
         },
+        # Embeddings — Source: https://platform.openai.com/docs/pricing (verified
+        # live, August 2026). No generation step, so no output tokens — "output"
+        # is 0 by construction, not an omission. Previously not logged through
+        # this tracker at all (callers never read `response.usage`), so this was
+        # a total blind spot rather than a mispriced one, unlike the two entries
+        # above — cheap per call ($0.02/1M) but non-trivial in aggregate: fires
+        # on every Brand Brain edit, every document upload, and every
+        # search_documents tool call.
+        "text-embedding-3-small": {
+            "input": Decimal("0.00002"),  # $0.02 per 1M input tokens
+            "output": Decimal("0"),
+        },
         # Fallback for unknown models (use Sonnet pricing) — still wrong for any
         # OpenAI/Gemini model not listed above, just less wrong than no entry at all.
         "default": {

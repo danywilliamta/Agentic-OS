@@ -135,6 +135,21 @@ class TestCalculateCost:
 
         assert gemini_image_costs["total_cost"] != default_costs["total_cost"]
 
+    def test_calculate_cost_text_embedding_3_small(self, tracker):
+        costs = tracker.calculate_cost("text-embedding-3-small", 1000, 0)
+
+        # $0.00002 per 1K input, no output tokens (no generation step)
+        assert costs["input_cost"] == Decimal("0.00002")
+        assert costs["output_cost"] == Decimal("0")
+        assert costs["total_cost"] == Decimal("0.00002")
+
+    def test_calculate_cost_text_embedding_3_small_does_not_fall_back_to_default(self, tracker):
+        # Regression guard, same rationale as the gpt-4o-mini/gemini ones above.
+        default_costs = tracker.calculate_cost("some-unlisted-model", 1000, 0)
+        embedding_costs = tracker.calculate_cost("text-embedding-3-small", 1000, 0)
+
+        assert embedding_costs["total_cost"] != default_costs["total_cost"]
+
     def test_calculate_cost_strips_provider_prefix(self, tracker):
         costs = tracker.calculate_cost("anthropic:claude-sonnet-4-6", 1000, 500)
 
@@ -225,6 +240,35 @@ class TestLogUsageSQLite:
         assert row[2] == 1000
         assert row[3] == 1120
         assert float(row[4]) == pytest.approx(0.03385, rel=1e-6)
+        assert row[5] == "ws-1"
+
+    @pytest.mark.asyncio
+    async def test_log_usage_text_embedding_3_small_row_has_correct_cost(self, sqlite_tracker):
+        # Same rationale as the gemini-image row test above, for the embeddings
+        # path (marketing-agency-ia's app.brain.embeddings.generate) — output
+        # is genuinely 0 (no generation step), not an omitted argument.
+        await sqlite_tracker.log_usage(
+            agent_id="embeddings",
+            user_id="system",
+            model="text-embedding-3-small",
+            input_tokens=1000,
+            output_tokens=0,
+            tenant_id="ws-1",
+        )
+
+        import aiosqlite
+        async with aiosqlite.connect(sqlite_tracker._sqlite_path) as conn:
+            async with conn.execute(
+                "SELECT agent_id, model, input_tokens, output_tokens, total_cost_usd, tenant_id FROM token_usage"
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        assert row is not None
+        assert row[0] == "embeddings"
+        assert row[1] == "text-embedding-3-small"
+        assert row[2] == 1000
+        assert row[3] == 0
+        assert float(row[4]) == pytest.approx(0.00002, rel=1e-6)
         assert row[5] == "ws-1"
 
     @pytest.mark.asyncio
