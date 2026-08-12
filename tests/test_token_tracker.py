@@ -117,6 +117,24 @@ class TestCalculateCost:
         assert costs["output_cost"] == Decimal("0.005")
         assert costs["total_cost"] == Decimal("0.0075")
 
+    def test_calculate_cost_gemini_flash_lite_image(self, tracker):
+        costs = tracker.calculate_cost("gemini-3.1-flash-lite-image", 1000, 1120)
+
+        # $0.00025 per 1K input + $0.03 per 1K output (image tokens)
+        assert costs["input_cost"] == Decimal("0.00025")
+        assert costs["output_cost"] == Decimal("0.0336")
+        assert costs["total_cost"] == Decimal("0.03385")
+
+    def test_calculate_cost_gemini_image_does_not_fall_back_to_default(self, tracker):
+        # Regression guard, same rationale as the gpt-4o-mini one above: image
+        # output tokens ($30/1M) are ~2x the "default" Sonnet text rate
+        # ($15/1M) — a silent fallback wouldn't even look obviously wrong,
+        # just quietly understate real image-generation cost.
+        default_costs = tracker.calculate_cost("some-unlisted-model", 1000, 1120)
+        gemini_image_costs = tracker.calculate_cost("gemini-3.1-flash-lite-image", 1000, 1120)
+
+        assert gemini_image_costs["total_cost"] != default_costs["total_cost"]
+
     def test_calculate_cost_strips_provider_prefix(self, tracker):
         costs = tracker.calculate_cost("anthropic:claude-sonnet-4-6", 1000, 500)
 
@@ -176,6 +194,38 @@ class TestLogUsageSQLite:
 
                 cost = float(row[0])
                 assert cost == pytest.approx(0.0105, rel=1e-6)
+
+    @pytest.mark.asyncio
+    async def test_log_usage_gemini_image_row_has_correct_cost(self, sqlite_tracker):
+        # Closes the gap left by TestCalculateCost's gemini tests above (those
+        # call calculate_cost directly, never through log_usage's actual
+        # INSERT) — proves the real end-to-end path this ecosystem's
+        # generate_image tool relies on (marketing-agency-ia's
+        # _track_gemini_usage) writes a real row with the Gemini-specific
+        # rate, not a value silently computed from the "default" fallback.
+        await sqlite_tracker.log_usage(
+            agent_id="generate_image",
+            user_id="system",
+            model="gemini-3.1-flash-lite-image",
+            input_tokens=1000,
+            output_tokens=1120,
+            tenant_id="ws-1",
+        )
+
+        import aiosqlite
+        async with aiosqlite.connect(sqlite_tracker._sqlite_path) as conn:
+            async with conn.execute(
+                "SELECT agent_id, model, input_tokens, output_tokens, total_cost_usd, tenant_id FROM token_usage"
+            ) as cursor:
+                row = await cursor.fetchone()
+
+        assert row is not None
+        assert row[0] == "generate_image"
+        assert row[1] == "gemini-3.1-flash-lite-image"
+        assert row[2] == 1000
+        assert row[3] == 1120
+        assert float(row[4]) == pytest.approx(0.03385, rel=1e-6)
+        assert row[5] == "ws-1"
 
     @pytest.mark.asyncio
     async def test_log_usage_with_tenant_id(self, sqlite_tracker):

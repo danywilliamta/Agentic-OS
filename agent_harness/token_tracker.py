@@ -84,8 +84,21 @@ class TokenUsageTracker:
             "input": Decimal("0.0025"),  # $2.50 per 1M input tokens
             "output": Decimal("0.01"),   # $10 per 1M output tokens
         },
+        # Gemini image generation — Source: https://ai.google.dev/gemini-api/docs/pricing
+        # (verified live, August 2026). Output tokens here are dominated by the
+        # generated image itself (~1120 tokens/image at 1K resolution), priced at
+        # $30/1M — nowhere near the $1.50/1M "output text" rate the same model
+        # charges for its accompanying text, and wildly different from any
+        # Anthropic/OpenAI entry above. Without this entry, callers logging usage
+        # for this model (e.g. this ecosystem's generate_image tool) would fall
+        # through to "default" (Sonnet text pricing, $15/1M output) — ~2x too
+        # cheap for image output, not just "somewhat off" like the OpenAI gap above.
+        "gemini-3.1-flash-lite-image": {
+            "input": Decimal("0.00025"),  # $0.25 per 1M input tokens (text/image/video)
+            "output": Decimal("0.03"),    # $30.00 per 1M output tokens (image)
+        },
         # Fallback for unknown models (use Sonnet pricing) — still wrong for any
-        # OpenAI model not listed above, just less wrong than no entry at all.
+        # OpenAI/Gemini model not listed above, just less wrong than no entry at all.
         "default": {
             "input": Decimal("0.003"),
             "output": Decimal("0.015"),
