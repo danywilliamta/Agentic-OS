@@ -68,7 +68,24 @@ class TokenUsageTracker:
             "input": Decimal("0.001"),   # $0.001 per 1K input tokens
             "output": Decimal("0.005"),  # $0.005 per 1K output tokens
         },
-        # Fallback for unknown models (use Sonnet pricing)
+        # OpenAI models — Source: https://platform.openai.com/docs/pricing (rates as
+        # known at this package's last update; unlike the Anthropic entries above,
+        # not independently reverified against a live August-2026 pricing page —
+        # confirm before trusting this table for a real billing/margin decision).
+        # Added because callers routing through llm_router's OpenAI path (e.g.
+        # this app's brand_brain_importer, EXTRACTOR_MODEL="gpt-4o-mini") were
+        # silently falling through to "default" (Sonnet pricing), overstating
+        # their real cost by roughly 20x.
+        "gpt-4o-mini": {
+            "input": Decimal("0.00015"),  # $0.15 per 1M input tokens
+            "output": Decimal("0.0006"),  # $0.60 per 1M output tokens
+        },
+        "gpt-4o": {
+            "input": Decimal("0.0025"),  # $2.50 per 1M input tokens
+            "output": Decimal("0.01"),   # $10 per 1M output tokens
+        },
+        # Fallback for unknown models (use Sonnet pricing) — still wrong for any
+        # OpenAI model not listed above, just less wrong than no entry at all.
         "default": {
             "input": Decimal("0.003"),
             "output": Decimal("0.015"),

@@ -91,6 +91,32 @@ class TestCalculateCost:
         assert costs["output_cost"] == Decimal("0.002")
         assert costs["total_cost"] == Decimal("0.0028")
 
+    def test_calculate_cost_gpt_4o_mini(self, tracker):
+        costs = tracker.calculate_cost("gpt-4o-mini", 1000, 500)
+
+        # $0.00015 per 1K input + $0.0006 per 1K output
+        assert costs["input_cost"] == Decimal("0.00015")
+        assert costs["output_cost"] == Decimal("0.0003")
+        assert costs["total_cost"] == Decimal("0.00045")
+
+    def test_calculate_cost_gpt_4o_mini_does_not_fall_back_to_default(self, tracker):
+        # Regression guard: before gpt-4o-mini had its own entry, this silently
+        # used the "default" (Sonnet) rate — ~20x too expensive. Pin it apart
+        # from the default-fallback rate so a future removal of this entry
+        # fails loudly here instead of just overstating cost in production.
+        default_costs = tracker.calculate_cost("some-unlisted-model", 1000, 500)
+        gpt_4o_mini_costs = tracker.calculate_cost("gpt-4o-mini", 1000, 500)
+
+        assert gpt_4o_mini_costs["total_cost"] != default_costs["total_cost"]
+
+    def test_calculate_cost_gpt_4o(self, tracker):
+        costs = tracker.calculate_cost("gpt-4o", 1000, 500)
+
+        # $0.0025 per 1K input + $0.01 per 1K output
+        assert costs["input_cost"] == Decimal("0.0025")
+        assert costs["output_cost"] == Decimal("0.005")
+        assert costs["total_cost"] == Decimal("0.0075")
+
     def test_calculate_cost_strips_provider_prefix(self, tracker):
         costs = tracker.calculate_cost("anthropic:claude-sonnet-4-6", 1000, 500)
 
